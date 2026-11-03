@@ -205,8 +205,7 @@ class DossierRepo:
             try:
                 async with db.execute(
                     "SELECT to_id AS other FROM gift_edges WHERE from_id=? UNION SELECT from_id FROM gift_edges WHERE to_id=?",
-                    (user_id, user_id)
-                ) as cur:
+                    (user_id, user_id)) as cur:
                     gift_ids = {r["other"] async for r in cur}
             except Exception:
                 pass
@@ -215,8 +214,7 @@ class DossierRepo:
             try:
                 async with db.execute(
                     "SELECT DISTINCT cm2.user_id AS other FROM chat_members cm1 JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id WHERE cm1.user_id=? AND cm2.user_id != ?",
-                    (user_id, user_id)
-                ) as cur:
+                    (user_id, user_id)) as cur:
                     chat_ids = {r["other"] async for r in cur}
             except Exception:
                 pass
@@ -236,8 +234,7 @@ class DossierRepo:
                 ph = ",".join("?" * len(all_ids))
                 async with db.execute(
                     f"SELECT user_id, username FROM users WHERE user_id IN ({ph})",
-                    tuple(all_ids)
-                ) as cur:
+                    tuple(all_ids)) as cur:
                     async for row in cur:
                         unames[row["user_id"]] = row["username"]
             except Exception:
