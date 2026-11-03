@@ -153,7 +153,7 @@ class DossierRepo:
     async def touch_user(self, user_id: int, username: str | None, full_name: str, ts: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                """INSERT INTO user(user_id, username, last_name, updated_at) 
+                """INSERT INTO users(user_id, username, last_name, updated_at) 
                    VALUES(?,?,?,?) 
                    ON CONFLICT (user_id) DO UPDATE SET 
                    username=excluded.username, 
@@ -233,7 +233,7 @@ class DossierRepo:
             try:
                 ph = ",".join("?" * len(all_ids))
                 async with db.execute(
-                    f"SELECT user_id, username FROM user WHERE user_id IN ({ph})",
+                    f"SELECT user_id, username FROM users WHERE user_id IN ({ph})",
                     tuple(all_ids)) as cur:
                     async for row in cur:
                         unames[row["user_id"]] = row["username"]
