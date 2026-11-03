@@ -1,0 +1,54 @@
+"""Реестр функций бота и их настроек по умолчанию."""
+
+# Глобальные функции (включаются/выключаются администратором бота в /admin)
+GLOBAL_FEATURES: dict[str, str] = {
+    "moderation": "🛡 Модерация в группах",
+    "call": "📢 Калл (пинг всех)",
+    "economy": "💰 Экономика и казино",
+    "games": "🎲 Мини-игры",
+    "rp": "🤗 RP-команды и браки",
+    "boardgames": "♟ Шахматы и шашки",
+    "business": "💼 Бизнес-ассистент",
+    "gifts": "🎁 Отслеживание подарков",
+    "usernames": "🔎 Отслеживание юзернеймов",
+}
+
+# Настройки группы (меню /settings в группе)
+GROUP_DEFAULTS: dict[str, object] = {
+    "moderation": True,
+    "call": True,
+    "call_admins_only": True,
+    "economy": True,
+    "games": True,
+    "rp": True,
+    "boardgames": True,
+    "warn_limit": 3,
+    "warn_action": "mute",  # mute | kick | ban
+}
+
+GROUP_TOGGLES: dict[str, str] = {
+    "moderation": "🛡 Модерация",
+    "call": "📢 Калл",
+    "call_admins_only": "👮 Калл только для админов",
+    "economy": "💰 Экономика/казино",
+    "games": "🎲 Мини-игры",
+    "rp": "🤗 RP и браки",
+    "boardgames": "♟ Шахматы/шашки",
+}
+
+# Личные настройки пользователя (бизнес-режим)
+USER_DEFAULTS: dict[str, object] = {
+    "biz_edits": True,
+    "biz_deletes": True,
+    "biz_disappearing": True,
+    "biz_mute": True,
+    "biz_games": True,
+}
+
+USER_TOGGLES: dict[str, str] = {
+    "biz_edits": "✏️ Уведомлять об изменениях",
+    "biz_deletes": "🗑 Уведомлять об удалениях",
+    "biz_disappearing": "🔥 Сохранять исчезающие медиа",
+    "biz_mute": "🔇 Команды .мут/.размут",
+    "biz_games": "♟ Команды .шахматы/.шашки",
+}
