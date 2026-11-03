@@ -43,6 +43,8 @@ USER_DEFAULTS: dict[str, object] = {
     "biz_disappearing": True,
     "biz_mute": True,
     "biz_games": True,
+    "msg_style": "none",   # стиль автоизменения своих сообщений (см. services/textstyles.py)
+    "msg_format": "none",  # формат: жирный, курсив и т.д.
 }
 
 USER_TOGGLES: dict[str, str] = {

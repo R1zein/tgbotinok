@@ -469,3 +469,63 @@ async def test_call_uses_usernames_and_userbot(env, monkeypatch):
     joined = " ".join(s.texts())
     assert "@user" in joined and "@silent_guy" in joined and "tg://user?id=400" in joined
     assert await db.get_member(GROUP, 777)  # полный список сохраняется в базу
+
+
+async def test_business_styles(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(OWNER, OWNER, "/start")))
+    conn = BusinessConnection.model_validate({
+        "id": BC, "user": user(OWNER), "user_chat_id": OWNER, "date": int(time.time()),
+        "is_enabled": True, "rights": {"can_reply": True, "can_delete_all_messages": True},
+    })
+    await feed(upd(business_connection=conn))
+
+    def bmsg(from_id, text):
+        m = msg(OTHER, from_id, text)
+        m["business_connection_id"] = BC
+        return m
+
+    def edits():
+        return [c for c in s.calls if type(c).__name__ == "EditMessageText"]
+
+    # без стиля сообщения не трогаем
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, "привет")))
+    assert not edits()
+
+    # .жирный — команда превращается в уведомление, потом сообщения становятся жирными
+    await feed(upd(business_message=bmsg(OWNER, ".жирный")))
+    assert (await db.get_user_settings(OWNER))["msg_format"] == "bold"
+    assert "Жирный" in edits()[-1].text
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, "как дела")))
+    e = edits()[-1]
+    assert e.text == "<b>как дела</b>" and e.business_connection_id == BC
+
+    # .пикми включает стиль, сообщения собеседника не меняются
+    await feed(upd(business_message=bmsg(OWNER, ".пикми")))
+    assert (await db.get_user_settings(OWNER))["msg_style"] == "kawaii"
+    s.clear()
+    await feed(upd(business_message=bmsg(OTHER, "я собеседник")))
+    assert not edits()
+    await feed(upd(business_message=bmsg(OWNER, "хочу кушать")))
+    assert edits()[-1].text.startswith("<b>") and edits()[-1].text != "<b>хочу кушать</b>"
+
+    # повторная команда выключает, .обычный сбрасывает всё
+    await feed(upd(business_message=bmsg(OWNER, ".пикми")))
+    assert (await db.get_user_settings(OWNER))["msg_style"] == "none"
+    await feed(upd(business_message=bmsg(OWNER, ".стиль пират")))
+    assert (await db.get_user_settings(OWNER))["msg_style"] == "pirate"
+    await feed(upd(business_message=bmsg(OWNER, ".обычный")))
+    st = await db.get_user_settings(OWNER)
+    assert st["msg_style"] == "none" and st["msg_format"] == "none"
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, ".стиль")))  # список стилей — в ЛС бота
+    assert any("Стили сообщений" in t for t in s.texts())
+
+    # меню в боте
+    for data in ("sty:menu", "sty:s:robot", "sty:f:italic"):
+        await feed(cb(OWNER, data, msg(OWNER, BOT_ID, "x")))
+    st = await db.get_user_settings(OWNER)
+    assert st["msg_style"] == "robot" and st["msg_format"] == "italic"
+    assert "<i>🤖 БИП-БУП." in edits()[-1].text

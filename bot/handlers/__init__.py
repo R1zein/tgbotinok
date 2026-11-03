@@ -13,6 +13,7 @@ from . import (
     moderation,
     rp,
     start,
+    styles,
     usernames,
 )
 
@@ -24,6 +25,7 @@ def get_routers() -> list[Router]:
         start.router,
         usernames.router,
         gifts.router,
+        styles.router,
         business.router,
         group_settings.router,
         moderation.router,
