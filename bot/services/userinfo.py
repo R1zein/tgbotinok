@@ -72,6 +72,4 @@ def format_card(*, user_id: int, first_name: str | None = None, last_name: str |
         lines.append("🏷 " + ", ".join(flags))
     if language_code:
         lines.append(f"🌐 Язык клиента: {esc(language_code)}")
-    lines.append("\n<i>Это публичные данные аккаунта. Точная дата регистрации Telegram не "
-                 "раскрывает — оценка по ID может отличаться на несколько месяцев.</i>")
     return "\n".join(lines)

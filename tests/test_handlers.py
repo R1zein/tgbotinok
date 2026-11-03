@@ -692,9 +692,11 @@ async def test_business_info_card(env):
     await feed(upd(business_message=_bmsg(OTHER, OWNER, ".инфа")))
     # команда удаляется из чата, карточка приходит владельцу в ЛС
     assert "DeleteBusinessMessages" in s.names()
-    card = [c for c in s.calls if type(c).__name__ == "SendMessage" and c.chat_id == OWNER][-1]
+    card = [c for c in s.calls if type(c).__name__ == "SendMessage"
+            and getattr(c, "business_connection_id", None) == BC][-1]
+    assert card.chat_id == OTHER  # карточка публикуется в чат, а не в ЛС
     assert "Информация" in card.text and f"<code>{OTHER}</code>" in card.text
-    # никаких «знакомых» и «групп» — карты связей нет
+    assert "приблиз" not in card.text.lower() and "может отлич" not in card.text.lower()
     low = card.text.lower()
     assert "знаком" not in low and "группы:" not in low
 
@@ -703,5 +705,6 @@ async def test_business_info_card(env):
     await feed(upd(business_message=target))
     s.clear()
     await feed(upd(business_message=_bmsg(OTHER, OWNER, ".whois", reply_to_message=target)))
-    card = [c for c in s.calls if type(c).__name__ == "SendMessage" and c.chat_id == OWNER][-1]
-    assert f"<code>{OTHER}</code>" in card.text
+    card = [c for c in s.calls if type(c).__name__ == "SendMessage"
+            and getattr(c, "business_connection_id", None) == BC][-1]
+    assert card.chat_id == OTHER and f"<code>{OTHER}</code>" in card.text

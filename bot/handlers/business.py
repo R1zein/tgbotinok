@@ -314,7 +314,7 @@ def commands_text() -> str:
         "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
         "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
         "🪞 <code>.клон</code> — повторять каждое сообщение собеседника (ещё раз — выключить)\n"
-        "ℹ️ <code>.инфа</code> — ID и примерная дата регистрации собеседника (придёт вам в ЛС)\n"
+        "ℹ️ <code>.инфа</code> — ID и примерная дата регистрации собеседника (ответ в чат)\n"
         f"🔁 <code>.спам текст 5</code> — отправить текст несколько раз (до {SPAM_MAX})\n"
         "♟ <code>.шахматы</code> — партия в шахматы\n"
         "⚪ <code>.шашки</code> — партия в шашки\n\n"
@@ -454,7 +454,10 @@ async def info_command(message: Message, bot: Bot, conn) -> None:
         card = format_card(user_id=chat.id, first_name=chat.first_name, last_name=chat.last_name,
                            username=chat.username)
     await delete_business(bot, conn["id"], message.chat.id, [message.message_id])
-    await safe_send(bot, conn["user_chat_id"], card)
+    try:
+        await bot.send_message(message.chat.id, card, business_connection_id=conn["id"])
+    except TelegramBadRequest as e:
+        log.info("Не удалось отправить карточку: %s", e)
 
 
 async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> None:
