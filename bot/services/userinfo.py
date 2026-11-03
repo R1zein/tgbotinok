@@ -54,7 +54,7 @@ def format_card(*, user_id: int, first_name: str | None = None, last_name: str |
                 username: str | None = None, is_bot: bool = False, is_premium: bool = False,
                 language_code: str | None = None) -> str:
     name = " ".join(filter(None, [first_name, last_name])) or "—"
-    lines = ["ℹ️ <b>Информация (из открытых данных)</b>\n",
+    lines = ["ℹ️ <b>Информация</b>\n",
              f"👤 Имя: {esc(name)}",
              f"🔗 Юзернейм: @{esc(username)}" if username else "🔗 Юзернейм: —",
              f"🆔 ID: <code>{user_id}</code>"]
