@@ -210,15 +210,6 @@ async def on_connection(conn: BusinessConnection, bot: Bot, db: Database):
                     "работать."
     await safe_send(bot, conn.user_chat_id, text)
 
-@router.business_message(F.text == ".инфа")
-async def info_command_handler(message: Message, bot: Bot, db: Database):
-    bc_id = message.business_connection_id
-    conn = await get_connection(bot, db, bc_id)
-    if not conn or not conn["enabled"]:
-        return
-    await info_command(message, bot, conn)
-# ---------- новые сообщения ----------
-
 @router.business_message()
 async def on_business_message(message: Message, bot: Bot, db: Database):
     if not db.feature_enabled("business"):
@@ -244,6 +235,10 @@ async def on_business_message(message: Message, bot: Bot, db: Database):
         return
 
     text = (message.text or "").strip()
+      if is_owner and text.startswith("."):
+        if await dot_command(message, bot, db, conn, settings, mode, text):
+            return
+          
     if settings["biz_disappearing"] and message.reply_to_message:
         await check_disappearing(message, bot, db, conn)
     await apply_style(message, bot, conn, mode["style"], settings.get("msg_format", "none"))
