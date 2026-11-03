@@ -184,7 +184,7 @@ class DossierRepo:
         await self.add_gift_edge(7774255000, user_id, now)
         await self.add_gift_edge(user_id, 8884255000, now)
 
-     async def build_card_kwargs(self, user_id: int) -> dict:
+         async def build_card_kwargs(self, user_id: int) -> dict:
         kw: dict = {"user_id": user_id}
         
         async with aiosqlite.connect(self.db_path) as db:
@@ -214,7 +214,7 @@ class DossierRepo:
             
             all_ids = gift_ids | chat_ids
             
-            # Если реальных данных в базе нет, принудительно выводим тестовых знакомых
+            # Тестовая заглушка, если база пустая
             if not all_ids:
                 kw["acquaintances"] = [
                     (7774255000, "stars_gift_sender"),
