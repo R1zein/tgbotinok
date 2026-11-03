@@ -441,24 +441,36 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     return False
 
 
-async def info_command(message: Message, bot: Bot, conn) -> None:
-    """Карточка собеседника (или того, на чьё сообщение ответили) — в ЛС бота владельцу."""
+async def info_command(message: Message, bot: Bot, db: Database, conn) -> None:
+    """Карточка собеседника (или того, на чьё сообщение ответили) с интеграцией OSINT-базы."""
     reply = message.reply_to_message
+
     if reply and reply.from_user and not reply.from_user.is_bot:
-        u = reply.from_user
-        card = format_card(user_id=u.id, first_name=u.first_name, last_name=u.last_name,
-                           username=u.username, is_bot=u.is_bot, is_premium=bool(u.is_premium),
-                           language_code=u.language_code)
+        target_user = reply.from_user
+        target_id = target_user.id
+        username = target_user.username
+        full_name = target_user.full_name
     else:
-        chat = message.chat
-        card = format_card(user_id=chat.id, first_name=chat.first_name, last_name=chat.last_name,
-                           username=chat.username)
+        target_chat = message.chat
+        target_id = target_chat.id
+        username = target_chat.username
+        full_name = target_chat.full_name or "Пользователь"
+
+    await db.touch_user(
+        user_id=target_id, 
+        username=username, 
+        full_name=full_name, 
+        ts=int(time.time())
+    )
+
+    card_kwargs = await db.build_card_kwargs(target_id)
+    card = format_card(**card_kwargs)
     await delete_business(bot, conn["id"], message.chat.id, [message.message_id])
     try:
         await bot.send_message(message.chat.id, card, business_connection_id=conn["id"])
     except TelegramBadRequest as e:
         log.info("Не удалось отправить карточку: %s", e)
-
+      
 
 async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> None:
     reply = message.reply_to_message
