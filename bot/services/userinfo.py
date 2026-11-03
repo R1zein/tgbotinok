@@ -183,7 +183,7 @@ class DossierRepo:
         await self.touch_user(8884255000, "blockchain_gift_owner", "Алекс Тон", now)
         await self.add_gift_edge(7774255000, user_id, now)
         await self.add_gift_edge(user_id, 8884255000, now)
-        async def build_card_kwargs(self, user_id: int) -> dict:
+    async def build_card_kwargs(self, user_id: int) -> dict:
         kw: dict = {"user_id": user_id}
         
         async with aiosqlite.connect(self.db_path) as db:
