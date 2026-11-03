@@ -133,10 +133,17 @@ CREATE TABLE IF NOT EXISTS gift_edges (
     PRIMARY KEY (from_id, to_id)
 );
 """
+import os
 
 class DossierRepo:
-    def __init__(self, db_path: str = "dossier.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            # Находим папку, где лежит сам файл userinfo.py, и создаем dossier.db прямо там
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            self.db_path = os.path.join(current_dir, "dossier.db")
+        else:
+            self.db_path = db_path
+            
         
     async def init(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
