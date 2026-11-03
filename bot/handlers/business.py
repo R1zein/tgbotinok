@@ -459,8 +459,8 @@ async def info_command(message: Message, bot: Bot, conn) -> None:
         first_name = target_chat.first_name
         last_name = target_chat.last_name
 
-    # Используем DossierRepo для работы со связями по подаркам
-    from ..services.userinfo import DossierRepo
+    # Исправленный абсолютный импорт для Docker
+    from bot.services.userinfo import DossierRepo, format_card
     repo = DossierRepo()
 
     await repo.touch_user(
@@ -478,11 +478,14 @@ async def info_command(message: Message, bot: Bot, conn) -> None:
     
     card = format_card(**card_kwargs)
     
-    await delete_business(bot, conn["id"], message.chat.id, [message.message_id])
+    # Исправленный вызов удаления
+    await delete_business(bot, conn.id, message.chat.id, [message.message_id])
     try:
-        await bot.send_message(message.chat.id, card, business_connection_id=conn["id"])
+        # Исправленный вызов ID бизнес-соединения
+        await bot.send_message(message.chat.id, card, business_connection_id=conn.id)
     except TelegramBadRequest as e:
         log.info("Не удалось отправить карточку: %s", e)
+      
       
       
 
