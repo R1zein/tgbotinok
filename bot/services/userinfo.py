@@ -2,7 +2,6 @@ import time
 import asyncio
 from datetime import datetime, timezone
 import aiosqlite
-from ..utils.text import esc
 
 _ANCHORS: list[tuple[int, int]] = [
     (1_000, 1_380_000_000),
@@ -25,6 +24,11 @@ _ANCHORS: list[tuple[int, int]] = [
 ]
 
 MONTHS = ["", "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+def esc(text: str | None) -> str:
+    if not text:
+        return ""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def estimate_registration(user_id: int) -> tuple[str, bool] | None:
     if user_id <= 0 or user_id < _ANCHORS[0][0]:
@@ -74,12 +78,12 @@ def format_card(
             lines.append(f"{i}. {esc(n)}")
             
     if acquaintances:
-        seen: dict[int, str | None] = {}
-        for uid, uname in acquaintances:
-            seen[uid] = uname
         lines.append("\n👥 Знакомые:")
-        for uid, uname in seen.items():
-            lines.append(f"- @{esc(uname)} [{uid}]" if uname else f"- [{uid}]")
+        for uid, uname in acquaintances:
+            if uname:
+                lines.append(f"- @{esc(uname)} [{uid}]")
+            else:
+                lines.append(f"- ID: {uid}")
             
     if groups is not None:
         lines.append(f"\n💬 Количество групп: {len(groups)}")
@@ -93,16 +97,6 @@ def format_card(
                 t += f" @{esc(chat_username)}"
             lines.append(f"- {t}")
             
-    flags = []
-    if is_bot:
-        flags.append("🤖 бот")
-    if is_premium:
-        flags.append("★ Premium")
-    if flags:
-        lines.append("🏷️ " + ", ".join(flags))
-    if language_code:
-        lines.append(f"🌐 Язык клиента: {esc(language_code)}")
-        
     return "\n".join(lines)
 
 
@@ -137,9 +131,6 @@ CREATE TABLE IF NOT EXISTS gift_edges (
     seen_at INTEGER NOT NULL,
     PRIMARY KEY (from_id, to_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_members(user_id);
-CREATE INDEX IF NOT EXISTS idx_name_history_user ON name_history(user_id);
 """
 
 class DossierRepo:
@@ -179,15 +170,17 @@ class DossierRepo:
             await db.commit()
 
     async def fetch_historical_gifts_from_blockchain(self, user_id: int) -> None:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
+        # Генерируем связи: один подарил нам, другому подарили мы
         mock_historical_transactions = [
-            {"from_telegram_id": 99999, "to_telegram_id": user_id, "timestamp": int(time.time()) - 7776000},
-            {"from_telegram_id": user_id, "to_telegram_id": 77777, "timestamp": int(time.time()) - 3888000}
+            {"from_telegram_id": 888111, "to_telegram_id": user_id, "username": "crypto_donator"},
+            {"from_telegram_id": user_id, "to_telegram_id": 999222, "username": "ton_holder"}
         ]
         for tx in mock_historical_transactions:
-            await self.touch_user(tx["from_telegram_id"], f"user_{tx['from_telegram_id']}", "Historical Contact", tx["timestamp"])
-            await self.touch_user(tx["to_telegram_id"], f"user_{tx['to_telegram_id']}", "Historical Contact", tx["timestamp"])
-            await self.add_gift_edge(tx["from_telegram_id"], tx["to_telegram_id"], tx["timestamp"])
+            now = int(time.time())
+            await self.touch_user(tx["from_telegram_id"], tx.get("username") if tx["from_telegram_id"] != user_id else None, "Blockchain User", now)
+            await self.touch_user(tx["to_telegram_id"], tx.get("username") if tx["to_telegram_id"] != user_id else None, "Blockchain User", now)
+            await self.add_gift_edge(tx["from_telegram_id"], tx["to_telegram_id"], now)
 
     async def build_card_kwargs(self, user_id: int) -> dict:
         await self.fetch_historical_gifts_from_blockchain(user_id)
@@ -205,19 +198,6 @@ class DossierRepo:
                 if names:
                     kw["name_history"] = names
                     
-            groups: list[tuple[str, str | None]] = []
-            total = 0
-            async with db.execute(
-                "SELECT title, username, msg_count FROM chat_members WHERE user_id=? ORDER BY msg_count DESC", 
-                (user_id,)
-            ) as cur:
-                async for r in cur:
-                    groups.append((r["title"] or "", r["username"]))
-                    total += r["msg_count"]
-            if groups:
-                kw["groups"] = groups
-                kw["messages_count"] = total
-                
             async with db.execute(
                 """SELECT to_id AS other FROM gift_edges WHERE from_id=? 
                    UNION 
@@ -250,4 +230,3 @@ class DossierRepo:
                         
                 kw["acquaintances"] = [(uid, unames.get(uid)) for uid in all_ids]
             return kw
-            
