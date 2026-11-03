@@ -177,8 +177,11 @@ class DossierRepo:
         await self.add_gift_edge(7774255000, user_id, now)
         await self.add_gift_edge(user_id, 8884255000, now)
 
-        async def build_card_kwargs(self, user_id: int) -> dict:
+            async def build_card_kwargs(self, user_id: int) -> dict:
+        # Проверяем, что таблицы созданы, и добавляем тестовые подарки
+        await self.init()
         await self.fetch_historical_gifts_from_blockchain(user_id)
+        
         kw: dict = {"user_id": user_id}
         
         async with aiosqlite.connect(self.db_path) as db:
