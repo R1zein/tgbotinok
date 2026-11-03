@@ -439,8 +439,8 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         return True
     return False
 
-
-    # Получаем ID цели (из реплая или из текущего чата)
+async def info_command(message: Message, bot: Bot, db, conn) -> None:
+# Получаем ID цели (из реплая или из текущего чата)
     reply = message.reply_to_message
     if reply and reply.from_user and not reply.from_user.is_bot:
         target_id = reply.from_user.id
