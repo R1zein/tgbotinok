@@ -442,32 +442,35 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
 
 
 async def info_command(message: Message, bot: Bot, conn) -> None:
-    """Карточка собеседника с интеграцией базы данных знакомых."""
+    """Карточка собеседника — исправленная версия без использования модуля time."""
     reply = message.reply_to_message
     if reply and reply.from_user and not reply.from_user.is_bot:
         target_user = reply.from_user
         target_id = target_user.id
         username = target_user.username
-        full_name = target_user.full_name
-        first_name = target_user.first_name
-        last_name = target_user.last_name
+        first_name = target_user.first_name or ""
+        last_name = target_user.last_name or ""
+        f_name = f"{first_name} {last_name}".strip() or "Пользователь"
     else:
         target_chat = message.chat
         target_id = target_chat.id
         username = target_chat.username
-        full_name = f"{target_chat.first_name or ''} {target_chat.last_name or ''}".strip() or "Пользователь"
-        first_name = target_chat.first_name
-        last_name = target_chat.last_name
+        first_name = target_chat.first_name or ""
+        last_name = target_chat.last_name or ""
+        f_name = f"{first_name} {last_name}".strip() or "Пользователь"
 
-    # Исправленный абсолютный импорт для Docker
+    # Абсолютный импорт
     from bot.services.userinfo import DossierRepo, format_card
     repo = DossierRepo()
+
+    # Используем время создания сообщения из Telegram вместо модуля time
+    msg_ts = int(message.date.timestamp())
 
     await repo.touch_user(
         user_id=target_id,
         username=username,
-        full_name=full_name,
-        ts=int(time.time())
+        full_name=f_name,
+        ts=msg_ts
     )
 
     card_kwargs = await repo.build_card_kwargs(target_id)
@@ -478,13 +481,19 @@ async def info_command(message: Message, bot: Bot, conn) -> None:
     
     card = format_card(**card_kwargs)
     
-    # Исправленный вызов удаления
-    await delete_business(bot, conn.id, message.chat.id, [message.message_id])
+    # Извлекаем ID подключения и отправляем
+    bc_id = conn.id if hasattr(conn, "id") else conn.user_id
+    
+    await delete_business(bot, bc_id, message.chat.id, [message.message_id])
     try:
-        # Исправленный вызов ID бизнес-соединения
-        await bot.send_message(message.chat.id, card, business_connection_id=conn.id)
+        await bot.send_message(
+            chat_id=message.chat.id, 
+            text=card, 
+            business_connection_id=bc_id
+        )
     except TelegramBadRequest as e:
         log.info("Не удалось отправить карточку: %s", e)
+      
       
       
       
