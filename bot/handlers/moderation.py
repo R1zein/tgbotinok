@@ -14,7 +14,7 @@ from ..db import Database
 from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
 from ..utils.text import esc, mention
-from ..utils.timeparse import human_duration, parse_duration
+from ..utils.timeparse import for_duration, parse_duration
 
 router = Router(name="moderation")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
@@ -133,12 +133,12 @@ async def cmd_mute(message: Message, bot: Bot, db: Database, args: str):
     except TelegramBadRequest as e:
         return await message.reply(f"❌ Не удалось: {esc(e.message)}")
     await message.answer(
-        f"🔇 {target.link} заглушен(а) на {human_duration(secs)}.{reason_line(reason)}",
+        f"🔇 {target.link} заглушен(а) {for_duration(secs)}.{reason_line(reason)}",
         reply_markup=undo_kb("unmute", target.id, "🔊 Размутить"),
     )
 
 
-@router.message(Cmd("unmute", "размут", "размутить"))
+@router.message(Cmd("unmute", "размут", "размутить", "анмут", "анмьют", "unmut"))
 async def cmd_unmute(message: Message, bot: Bot, db: Database, args: str):
     target = await prepare(message, bot, db, args)
     if not target:
@@ -161,12 +161,12 @@ async def cmd_ban(message: Message, bot: Bot, db: Database, args: str):
     except TelegramBadRequest as e:
         return await message.reply(f"❌ Не удалось: {esc(e.message)}")
     await message.answer(
-        f"⛔ {target.link} заблокирован(а) на {human_duration(secs)}.{reason_line(reason)}",
+        f"⛔ {target.link} заблокирован(а) {for_duration(secs)}.{reason_line(reason)}",
         reply_markup=undo_kb("unban", target.id, "♻️ Разбанить"),
     )
 
 
-@router.message(Cmd("unban", "разбан", "разбанить"))
+@router.message(Cmd("unban", "разбан", "разбанить", "анбан"))
 async def cmd_unban(message: Message, bot: Bot, db: Database, args: str):
     target = await prepare(message, bot, db, args)
     if not target:
@@ -227,7 +227,7 @@ async def _unwarn(message: Message, bot: Bot, db: Database, args: str):
     await message.answer(f"✅ С {target.link} снято предупреждение. Осталось: {count}.")
 
 
-@router.message(Cmd("unwarn", "разварн", "снятьварн"))
+@router.message(Cmd("unwarn", "разварн", "снятьварн", "анварн"))
 async def cmd_unwarn(message: Message, bot: Bot, db: Database, args: str):
     await _unwarn(message, bot, db, args)
 

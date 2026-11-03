@@ -219,7 +219,7 @@ async def test_settings_and_call(env):
     s.clear()
     await feed(upd(message=msg(GROUP, ADMIN, "калл сбор")))
     assert any("вызывает всех" in t for t in s.texts())
-    assert any("tg://user?id=300" in t and "tg://user?id=400" in t for t in s.texts())
+    assert any("@user" in t and "@other" in t for t in s.texts())
     await feed(upd(message=msg(GROUP, ADMIN, "/settings")))
     await feed(cb(ADMIN, "gs:economy", msg(GROUP, BOT_ID, "⚙️")))
     assert (await db.get_chat_settings(GROUP))["economy"] is False
@@ -439,3 +439,33 @@ async def test_admin(env):
     import bot.handlers.admin as adm
     await asyncio.gather(*adm._tasks)
     assert "CopyMessage" in s.names()
+
+
+async def test_mute_forever_and_unmute_alias(env):
+    dp, bot, s, db, feed = env
+    target = msg(GROUP, USER, "привет")
+    await feed(upd(message=target))
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "мут", reply_to=target)))
+    assert any("заглушен(а) навсегда" in t for t in s.texts())
+    await feed(upd(message=msg(GROUP, ADMIN, "мут 2h", reply_to=target)))
+    assert any("заглушен(а) на 2 ч" in t for t in s.texts())
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "анмут", reply_to=target)))
+    assert "RestrictChatMember" in s.names() and any("снова может писать" in t for t in s.texts())
+
+
+async def test_call_uses_usernames_and_userbot(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    ub = dp["userbot"]
+    ub.ready = True
+
+    async def members(_bot, _chat):
+        return [(USER, "User", "user"), (OTHER, "Other", None), (777, "Silent", "silent_guy")]
+
+    monkeypatch.setattr(ub, "group_members", members)
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "/call")))
+    joined = " ".join(s.texts())
+    assert "@user" in joined and "@silent_guy" in joined and "tg://user?id=400" in joined
+    assert await db.get_member(GROUP, 777)  # полный список сохраняется в базу

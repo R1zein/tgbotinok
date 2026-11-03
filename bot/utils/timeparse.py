@@ -21,6 +21,11 @@ def parse_duration(token: str) -> int | None:
     return int(m.group(1)) * unit
 
 
+def for_duration(seconds: int | None) -> str:
+    """'навсегда' или 'на 30 мин' — для фраз вида «заглушен(а) …»."""
+    return "навсегда" if not seconds else f"на {human_duration(seconds)}"
+
+
 def human_duration(seconds: int | None) -> str:
     if not seconds:
         return "навсегда"

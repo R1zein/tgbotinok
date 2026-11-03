@@ -38,7 +38,7 @@ DISAPPEARING_TYPES = ("photo", "video", "voice", "video_note")
 SELF_DELETED_TTL = 300
 
 MUTE_CMDS = {"mute", "мут", "заглушить"}
-UNMUTE_CMDS = {"unmute", "размут", "разглушить"}
+UNMUTE_CMDS = {"unmute", "размут", "разглушить", "анмут", "анмьют"}
 CHESS_CMDS = {"chess", "шахматы"}
 CHECKERS_CMDS = {"checkers", "шашки"}
 

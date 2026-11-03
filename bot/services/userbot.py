@@ -4,8 +4,10 @@ import logging
 import time
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 
 from ..config import Config
 from ..proxy import telethon_proxy
@@ -68,3 +70,41 @@ class Userbot:
                 finally:
                     self._last_call = time.monotonic()
         raise RuntimeError("Слишком много FloodWait подряд")
+
+    # ---------- участники групп (для калла) ----------
+
+    async def _group_entity(self, bot, chat_id: int):
+        """Находит группу; если юзербота в ней нет — заходит (по юзернейму или
+        по одноразовой ссылке-приглашению, которую создаёт бот-администратор)."""
+        for attempt in range(2):
+            try:
+                return await self.client.get_entity(chat_id)
+            except ValueError:
+                if attempt == 0:
+                    await self.client.get_dialogs()  # обновляем кэш известных чатов
+        chat = await bot.get_chat(chat_id)
+        if chat.username:
+            await self.call(JoinChannelRequest(chat.username))
+            return await self.client.get_entity(chat.username)
+        link = await bot.create_chat_invite_link(chat_id, name="assistant", member_limit=1)
+        invite_hash = link.invite_link.rsplit("/", 1)[-1].lstrip("+")
+        try:
+            updates = await self.call(ImportChatInviteRequest(invite_hash))
+            return updates.chats[0]
+        except UserAlreadyParticipantError:
+            await self.client.get_dialogs()
+            return await self.client.get_entity(chat_id)
+
+    async def group_members(self, bot, chat_id: int, limit: int = 10000) -> list[tuple[int, str, str | None]]:
+        """[(id, имя, юзернейм)] всех участников группы, кроме ботов и удалённых аккаунтов."""
+        if not self.ready:
+            return []
+        entity = await self._group_entity(bot, chat_id)
+        result = []
+        async with self._lock:
+            async for u in self.client.iter_participants(entity, limit=limit):
+                if u.bot or u.deleted or u.id == self.me.id:
+                    continue
+                name = " ".join(filter(None, [u.first_name, u.last_name])) or str(u.id)
+                result.append((u.id, name, u.username))
+        return result
