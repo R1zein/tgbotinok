@@ -390,7 +390,7 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
         return True
     if cmd in INFO_CMDS:
-        await info_command(message, bot, conn)
+        await info_command(message, bot, db, conn)
         return True
     if await style_command(message, bot, db, conn, mode, cmd, arg):
         return True
