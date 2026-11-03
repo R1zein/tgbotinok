@@ -11,7 +11,7 @@ import logging
 import time
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     BufferedInputFile,
     BusinessConnection,
@@ -97,13 +97,26 @@ async def _save_connection(db: Database, conn: BusinessConnection) -> tuple[bool
     return can_reply, can_delete
 
 
-async def cache(db: Database, m: Message, bc_id: str) -> None:
+async def cache(db: Database, m: Message, bc_id: str, auto: bool = False) -> None:
     mtype, fid = extract_media(m)
     u = m.from_user
     await db.cache_business_message(
         bc_id, m.chat.id, m.message_id, u.id if u else 0, u.full_name if u else None,
         u.username if u else None, describe(m), mtype, fid, int(m.date.timestamp()),
+        auto=auto or bool(m.sender_business_bot),
     )
+
+
+AUTO_EDIT_WINDOW = 5  # правка в первые секунды после отправки — это бот собеседника, не человек
+
+
+def _ts(value) -> int:
+    return int(value.timestamp()) if hasattr(value, "timestamp") else int(value)
+
+
+def is_automatic(text: str | None) -> bool:
+    """Команды ботов (.команды, .пикми …) — их правки и удаления не показываем."""
+    return bool(text) and text.lstrip().startswith(".")
 
 
 async def delete_business(bot: Bot, bc_id: str, chat_id: int, ids: list[int]) -> bool:
@@ -182,24 +195,48 @@ async def on_business_message(message: Message, bot: Bot, db: Database):
     is_owner = bool(sender and sender.id == owner_id)
     settings = await db.get_user_settings(owner_id)
 
+    mode = await db.get_chat_mode(owner_id, message.chat.id)
+
     if not is_owner:
         if settings["biz_mute"] and await db.is_business_muted(owner_id, message.chat.id):
             await delete_business(bot, bc_id, message.chat.id, [message.message_id])
             return
         await cache(db, message, bc_id)
+        if mode["clone"] and not is_automatic(message.text or message.caption):
+            await echo(bot, bc_id, message)
         return
 
     text = (message.text or "").strip()
-    if text.startswith(".") and await dot_command(message, bot, db, conn, settings, text):
+    if text.startswith(".") and await dot_command(message, bot, db, conn, settings, mode, text):
         return
     if settings["biz_disappearing"] and message.reply_to_message:
         await check_disappearing(message, bot, db, conn)
-    await apply_style(message, bot, conn, settings)
+    await apply_style(message, bot, conn, mode["style"], settings.get("msg_format", "none"))
 
 
-async def apply_style(message: Message, bot: Bot, conn, settings: dict) -> None:
-    """Автоизменение своих сообщений: стиль (пикми, пират…) и/или формат (жирный, курсив…)."""
-    style, fmt = settings.get("msg_style", "none"), settings.get("msg_format", "none")
+async def echo(bot: Bot, bc_id: str, m: Message) -> None:
+    """Режим .клон: повторяет сообщение собеседника от имени владельца в том же чате."""
+    chat_id = m.chat.id
+    mtype, fid = extract_media(m)
+    try:
+        if mtype:
+            methods = {
+                "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
+                "voice": bot.send_voice, "audio": bot.send_audio, "document": bot.send_document,
+                "video_note": bot.send_video_note, "sticker": bot.send_sticker,
+            }
+            kwargs = {"business_connection_id": bc_id}
+            if m.caption and mtype not in ("video_note", "sticker"):
+                kwargs["caption"] = m.html_text
+            await methods[mtype](chat_id, fid, **kwargs)
+        elif m.text:
+            await bot.send_message(chat_id, m.html_text, business_connection_id=bc_id)
+    except TelegramBadRequest as e:
+        log.info("Клон: не удалось повторить сообщение: %s", e)
+
+
+async def apply_style(message: Message, bot: Bot, conn, style: str, fmt: str) -> None:
+    """Автоизменение своих сообщений: режим текста этого чата и/или общий формат."""
     if (style == "none" and fmt == "none") or not message.text or message.text.startswith("."):
         return
     new = render(message.text, message.html_text, style, fmt)
@@ -240,9 +277,11 @@ def _style_cmd(key: str) -> str:
 def commands_text() -> str:
     styles = "\n".join(f"• <code>.{_style_cmd(key)}</code> — {label}" for key, (label, _) in STYLES.items())
     return (
-        "📖 <b>Команды ассистента</b>\n\n"
+        "📖 <b>Команды ассистента</b> (действуют только в этом чате)\n\n"
         "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
         "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
+        "🪞 <code>.клон</code> — повторять каждое сообщение собеседника (ещё раз — выключить)\n"
+        f"🔁 <code>.спам текст 5</code> — отправить текст несколько раз (до {SPAM_MAX})\n"
         "♟ <code>.шахматы</code> — партия в шахматы\n"
         "⚪ <code>.шашки</code> — партия в шашки\n\n"
         "✨ <b>Режимы текста</b> (повтор команды — выключить):\n"
@@ -254,15 +293,19 @@ def commands_text() -> str:
 
 
 HELP_CMDS = {"команды", "commands", "help", "помощь", "хелп"}
+CLONE_CMDS = {"клон", "clone", "зеркало", "mirror"}
+SPAM_CMDS = {"спам", "spam"}
+SPAM_MAX = 10
+SPAM_PAUSE = 0.7
 RESET_CMDS = {"обычный", "normal", "стильвыкл"}
 
 
-async def style_command(message: Message, bot: Bot, db: Database, conn, settings: dict,
+async def style_command(message: Message, bot: Bot, db: Database, conn, mode: dict,
                         cmd: str, arg: str) -> bool:
-    """Режимы текста (пикми, пират…) включаются командой прямо в чате.
+    """Режимы текста (пикми, пират…) включаются командой в чате — только для этого чата.
     Формат (жирный, курсив…) настраивается в меню бота, как в TonzBot."""
     owner_id, bc_id, chat_id = conn["user_id"], conn["id"], message.chat.id
-    style = settings.get("msg_style", "none")
+    style = mode["style"]
     if cmd in STYLE_ALIASES:
         key = STYLE_ALIASES[cmd]
         new_style = "none" if style == key else key
@@ -278,10 +321,10 @@ async def style_command(message: Message, bot: Bot, db: Database, conn, settings
         new_style = "none"
     else:
         return False
-    await db.set_user_setting(owner_id, "msg_style", new_style)
+    await db.set_chat_mode(owner_id, chat_id, style=new_style)
     if new_style != "none":
         icon, label = STYLES[new_style][0].split(" ", 1)
-        text = (f"{icon} {label.split(' (')[0].lower()}-режим включён~\n\n"
+        text = (f"{icon} {label.split(' (')[0].lower()}-режим включён~ (в этом чате)\n\n"
                 f"чтобы отключить, введите <code>.{_style_cmd(new_style)}</code>")
     else:
         text = "✨ режим текста выключен"
@@ -289,16 +332,48 @@ async def style_command(message: Message, bot: Bot, db: Database, conn, settings
     return True
 
 
-async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: dict,
+async def spam(bot: Bot, bc_id: str, chat_id: int, text: str, count: int) -> None:
+    for _ in range(count):
+        try:
+            await bot.send_message(chat_id, text, business_connection_id=bc_id, parse_mode=None)
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except TelegramBadRequest as e:
+            log.info("Спам остановлен: %s", e)
+            return
+        await asyncio.sleep(SPAM_PAUSE)
+
+
+async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: dict, mode: dict,
                       text: str) -> bool:
     parts = text[1:].split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
-    arg = parts[1].strip().lower() if len(parts) > 1 else ""
+    raw_arg = parts[1].strip() if len(parts) > 1 else ""
+    arg = raw_arg.lower()
     bc_id, chat_id, owner_id = conn["id"], message.chat.id, conn["user_id"]
     if cmd in HELP_CMDS:
         await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
         return True
-    if await style_command(message, bot, db, conn, settings, cmd, arg):
+    if await style_command(message, bot, db, conn, mode, cmd, arg):
+        return True
+    if cmd in CLONE_CMDS:
+        on = not mode["clone"]
+        await db.set_chat_mode(owner_id, chat_id, clone=on)
+        await flash(bot, bc_id, chat_id, message.message_id,
+                    "🪞 клон-режим включён~\n\nчтобы отключить, введите <code>.клон</code>" if on
+                    else "🪞 клон-режим выключен")
+        return True
+    if cmd in SPAM_CMDS:
+        words = raw_arg.rsplit(maxsplit=1)
+        if len(words) < 2 or not words[1].isdigit() or int(words[1]) < 1:
+            await flash(bot, bc_id, chat_id, message.message_id,
+                        f"🔁 Пример: <code>.спам привет 5</code> (до {SPAM_MAX} раз)")
+            return True
+        await delete_business(bot, bc_id, chat_id, [message.message_id])
+        task = asyncio.create_task(spam(bot, bc_id, chat_id, words[0][:4096],
+                                        min(int(words[1]), SPAM_MAX)))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
         return True
     if cmd in MUTE_CMDS | UNMUTE_CMDS and settings["biz_mute"]:
         await delete_business(bot, bc_id, chat_id, [message.message_id])
@@ -385,11 +460,19 @@ async def on_business_edit(message: Message, bot: Bot, db: Database):
     if not sender or sender.id == conn["user_id"]:
         return
     old = await db.get_business_message(bc_id, message.chat.id, message.message_id)
-    await cache(db, message, bc_id)
+    new_text = describe(message)
+    # Команда бота собеседника (.команды и т.п.) — помечаем навсегда, чтобы не показывать
+    # ни её правку, ни последующее удаление
+    bot_command = bool(message.sender_business_bot or (old and old["auto"])
+                       or is_automatic(old["text"] if old else None) or is_automatic(new_text))
+    await cache(db, message, bc_id, auto=bot_command)
     settings = await db.get_user_settings(conn["user_id"])
     if not settings["biz_edits"]:
         return
-    new_text = describe(message)
+    # Правка в первые секунды после отправки — это бот собеседника («пикми»-режим и т.п.)
+    quick = bool(message.edit_date) and _ts(message.edit_date) - _ts(message.date) <= AUTO_EDIT_WINDOW
+    if bot_command or quick:
+        return
     new_type, new_fid = extract_media(message)
     if old and old["text"] == new_text and old["file_id"] == new_fid:
         return
@@ -424,7 +507,7 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
         row = await db.get_business_message(bc_id, chat.id, mid)
         if row:
             await db.delete_business_message(bc_id, chat.id, mid)
-        if row and row["from_id"] != owner_id:
+        if row and row["from_id"] != owner_id and not row["auto"] and not is_automatic(row["text"]):
             items.append(row)
     if not items or not settings["biz_deletes"]:
         return

@@ -363,6 +363,7 @@ async def test_business(env):
         return m
 
     m1 = bmsg(OTHER, "секрет")
+    m1["date"] = int(time.time()) - 60  # человек правит не сразу, а спустя время
     await feed(upd(business_message=m1))
     edited = dict(m1, text="не секрет", edit_date=int(time.time()))
     s.clear()
@@ -471,8 +472,7 @@ async def test_call_uses_usernames_and_userbot(env, monkeypatch):
     assert await db.get_member(GROUP, 777)  # полный список сохраняется в базу
 
 
-async def test_business_styles(env):
-    dp, bot, s, db, feed = env
+async def _connect_business(feed):
     await feed(upd(message=msg(OWNER, OWNER, "/start")))
     conn = BusinessConnection.model_validate({
         "id": BC, "user": user(OWNER), "user_chat_id": OWNER, "date": int(time.time()),
@@ -480,10 +480,21 @@ async def test_business_styles(env):
     })
     await feed(upd(business_connection=conn))
 
-    def bmsg(from_id, text):
-        m = msg(OTHER, from_id, text)
-        m["business_connection_id"] = BC
-        return m
+
+def _bmsg(chat_id, from_id, text=None, **extra):
+    m = msg(chat_id, from_id, text, **extra)
+    m["business_connection_id"] = BC
+    return m
+
+
+async def test_business_styles(env):
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    THIRD = 500
+    NAMES[THIRD] = "Third"
+
+    def bmsg(from_id, text, chat=OTHER):
+        return _bmsg(chat, from_id, text)
 
     def edits():
         return [c for c in s.calls if type(c).__name__ == "EditMessageText"]
@@ -493,7 +504,7 @@ async def test_business_styles(env):
     await feed(upd(business_message=bmsg(OWNER, "привет")))
     assert not edits()
 
-    # формат (жирный) — только в меню бота, как в TonzBot
+    # формат (жирный) — в меню бота, действует во всех чатах
     await feed(cb(OWNER, "sty:menu", msg(OWNER, BOT_ID, "x")))
     await feed(cb(OWNER, "sty:f:bold", msg(OWNER, BOT_ID, "x")))
     assert (await db.get_user_settings(OWNER))["msg_format"] == "bold"
@@ -501,39 +512,102 @@ async def test_business_styles(env):
     await feed(upd(business_message=bmsg(OWNER, "как дела")))
     e = edits()[-1]
     assert e.text == "<b>как дела</b>" and e.business_connection_id == BC
-    # команды формата в чате больше не работают — сообщение просто оформляется как обычно
-    s.clear()
-    await feed(upd(business_message=bmsg(OWNER, ".курсив")))
-    assert (await db.get_user_settings(OWNER))["msg_format"] == "bold"
+    await feed(cb(OWNER, "sty:f:none", msg(OWNER, BOT_ID, "x")))
 
-    # .пикми — режим текста командой в чате; команда превращается в уведомление
+    # .пикми — режим только для этого чата
     s.clear()
     await feed(upd(business_message=bmsg(OWNER, ".пикми")))
-    assert (await db.get_user_settings(OWNER))["msg_style"] == "kawaii"
+    assert (await db.get_chat_mode(OWNER, OTHER))["style"] == "kawaii"
+    assert (await db.get_chat_mode(OWNER, THIRD))["style"] == "none"
     assert "пикми-режим включён" in edits()[-1].text and ".пикми" in edits()[-1].text
     s.clear()
     await feed(upd(business_message=bmsg(OTHER, "я собеседник")))
     assert not edits()
     await feed(upd(business_message=bmsg(OWNER, "хочу кушать")))
-    assert edits()[-1].text.startswith("<b>") and edits()[-1].text != "<b>хочу кушать</b>"
+    assert edits() and edits()[-1].chat_id == OTHER
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, "в другом чате", chat=THIRD)))
+    assert not edits()  # в другом чате режим не включён
 
-    # повтор выключает, .пират переключает, .обычный выключает режим (формат остаётся)
+    # повтор выключает, .пират переключает, .обычный выключает
     await feed(upd(business_message=bmsg(OWNER, ".пикми")))
-    assert (await db.get_user_settings(OWNER))["msg_style"] == "none"
+    assert (await db.get_chat_mode(OWNER, OTHER))["style"] == "none"
     await feed(upd(business_message=bmsg(OWNER, ".пират")))
-    assert (await db.get_user_settings(OWNER))["msg_style"] == "pirate"
+    assert (await db.get_chat_mode(OWNER, OTHER))["style"] == "pirate"
     await feed(upd(business_message=bmsg(OWNER, ".обычный")))
-    st = await db.get_user_settings(OWNER)
-    assert st["msg_style"] == "none" and st["msg_format"] == "bold"
+    assert (await db.get_chat_mode(OWNER, OTHER))["style"] == "none"
 
-    # .команды — список прямо в чате (команда превращается в список)
+    # .команды — список прямо в чате
     s.clear()
     await feed(upd(business_message=bmsg(OWNER, ".команды")))
     e = edits()[-1]
-    assert "Команды ассистента" in e.text and ".мут" in e.text and ".пикми" in e.text
+    assert "Команды ассистента" in e.text and ".клон" in e.text and ".спам" in e.text
     assert e.chat_id == OTHER and e.business_connection_id == BC
 
-    # в меню бота можно выключить активный режим
-    await feed(upd(business_message=bmsg(OWNER, ".робот")))
-    await feed(cb(OWNER, "sty:s:none", msg(OWNER, BOT_ID, "x")))
-    assert (await db.get_user_settings(OWNER))["msg_style"] == "none"
+
+async def test_business_clone_and_spam(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    import bot.handlers.business as biz
+
+    async def no_sleep(*_a, **_kw):
+        return None
+    monkeypatch.setattr(biz, "SPAM_PAUSE", 0)
+
+    def sends():
+        return [c for c in s.calls if type(c).__name__ in ("SendMessage", "SendPhoto")
+                and getattr(c, "business_connection_id", None) == BC]
+
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".клон")))
+    assert (await db.get_chat_mode(OWNER, OTHER))["clone"] == 1
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OTHER, "я дурак")))
+    await feed(upd(business_message=_bmsg(OTHER, OTHER, None, caption="смотри",
+               photo=[{"file_id": "PH", "file_unique_id": "u", "width": 1, "height": 1}])))
+    await feed(upd(business_message=_bmsg(OTHER, OTHER, ".команды")))  # команды чужого бота не клонируем
+    out = sends()
+    assert [type(c).__name__ for c in out] == ["SendMessage", "SendPhoto"]
+    assert out[0].text == "я дурак" and out[0].chat_id == OTHER
+    assert out[1].photo == "PH" and out[1].caption == "смотри"
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".клон")))
+    assert (await db.get_chat_mode(OWNER, OTHER))["clone"] == 0
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OTHER, "тишина")))
+    assert not sends()
+
+    # .спам — не больше 10 раз
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".спам Привет мир 50")))
+    await asyncio.gather(*biz._bg_tasks)
+    out = [c for c in sends() if c.text == "Привет мир"]
+    assert len(out) == biz.SPAM_MAX
+    assert "DeleteBusinessMessages" in s.names()
+
+
+async def test_business_ignores_automatic_changes(env):
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    now = int(time.time())
+    m = _bmsg(OTHER, OTHER, "обычный текст")
+    m["date"] = now - 60
+    await feed(upd(business_message=m))
+    # правка через 2 секунды после отправки (бот собеседника «пикми»-режим) — молчим
+    quick = _bmsg(OTHER, OTHER, "привеет~ (◕ᴗ◕✿)")
+    quick["date"] = now
+    await feed(upd(business_message=quick))
+    s.clear()
+    await feed(upd(edited_business_message=dict(quick, text="уже другое", edit_date=now + 2)))
+    assert not any("изменено" in t.lower() for t in s.texts())
+    # команда чужого бота: изменение и удаление не показываем
+    cmd = _bmsg(OTHER, OTHER, ".команды")
+    cmd["date"] = now - 100
+    await feed(upd(business_message=cmd))
+    await feed(upd(edited_business_message=dict(cmd, text="📖 список команд", edit_date=now)))
+    await feed(upd(deleted_business_messages={
+        "business_connection_id": BC, "chat": {"id": OTHER, "type": "private", "first_name": "Other"},
+        "message_ids": [cmd["message_id"]],
+    }))
+    assert not s.texts() or not any("Удалено" in t or "изменено" in t for t in s.texts())
+    # обычная правка человеком через минуту — показываем
+    await feed(upd(edited_business_message=dict(m, text="исправил", edit_date=now)))
+    assert any("Было" in t and "исправил" in t for t in s.texts())

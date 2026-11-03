@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS business_messages(
     PRIMARY KEY(bc_id, chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bm_date ON business_messages(date);
+CREATE TABLE IF NOT EXISTS business_chat_modes(
+    owner_id INTEGER, chat_id INTEGER,
+    style TEXT NOT NULL DEFAULT 'none',
+    clone INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(owner_id, chat_id)
+);
 CREATE TABLE IF NOT EXISTS business_mutes(
     owner_id INTEGER, chat_id INTEGER, bc_id TEXT, since INTEGER,
     PRIMARY KEY(owner_id, chat_id)
@@ -102,9 +108,20 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        await self._migrate()
         await self.conn.commit()
         async with self.conn.execute("SELECT key, value FROM global_settings") as cur:
             self._global_cache = {r["key"]: r["value"] for r in await cur.fetchall()}
+
+    async def _migrate(self) -> None:
+        """Добавляет столбцы, появившиеся в новых версиях, в уже существующую базу."""
+        async with self.conn.execute("PRAGMA table_info(business_messages)") as cur:
+            cols = {r["name"] for r in await cur.fetchall()}
+        if "auto" not in cols:
+            # 1 — сообщение отправил чужой бизнес-бот (его правки/удаление не показываем)
+            await self.conn.execute(
+                "ALTER TABLE business_messages ADD COLUMN auto INTEGER NOT NULL DEFAULT 0"
+            )
 
     async def close(self) -> None:
         if self.conn:
@@ -351,14 +368,15 @@ class Database:
     async def cache_business_message(self, bc_id: str, chat_id: int, message_id: int,
                                      from_id: int, from_name: str, from_username: str | None,
                                      text: str | None, media_type: str | None,
-                                     file_id: str | None, date: int) -> None:
+                                     file_id: str | None, date: int, auto: bool = False) -> None:
         await self.execute(
             "INSERT INTO business_messages(bc_id, chat_id, message_id, from_id, from_name, "
-            "from_username, text, media_type, file_id, date) VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "from_username, text, media_type, file_id, date, auto) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(bc_id, chat_id, message_id) DO UPDATE SET text=excluded.text, "
-            "media_type=excluded.media_type, file_id=excluded.file_id",
+            "media_type=excluded.media_type, file_id=excluded.file_id, "
+            "auto=MAX(business_messages.auto, excluded.auto)",
             (bc_id, chat_id, message_id, from_id, from_name, from_username, text,
-             media_type, file_id, date),
+             media_type, file_id, date, int(auto)),
         )
 
     async def get_business_message(self, bc_id: str, chat_id: int, message_id: int):
@@ -377,6 +395,23 @@ class Database:
         await self.execute(
             "DELETE FROM business_messages WHERE date < ?", (now() - older_than_days * 86400,)
         )
+
+    async def get_chat_mode(self, owner_id: int, chat_id: int) -> dict:
+        row = await self.fetchone(
+            "SELECT style, clone FROM business_chat_modes WHERE owner_id=? AND chat_id=?",
+            (owner_id, chat_id),
+        )
+        return dict(row) if row else {"style": "none", "clone": 0}
+
+    async def set_chat_mode(self, owner_id: int, chat_id: int, **fields: Any) -> dict:
+        mode = await self.get_chat_mode(owner_id, chat_id)
+        mode.update(fields)
+        await self.execute(
+            "INSERT INTO business_chat_modes(owner_id, chat_id, style, clone) VALUES(?,?,?,?) "
+            "ON CONFLICT(owner_id, chat_id) DO UPDATE SET style=excluded.style, clone=excluded.clone",
+            (owner_id, chat_id, mode["style"], int(mode["clone"])),
+        )
+        return mode
 
     async def is_business_muted(self, owner_id: int, chat_id: int) -> bool:
         return await self.fetchone(
