@@ -445,7 +445,7 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     return False
 
 
-async def info_command(message: Message, bot: Bot, conn) -> None:
+async def info_command(message: Message, bot: Bot, db, conn) -> None:
     """Карточка собеседника — исправленная версия без использования модуля time."""
     reply = message.reply_to_message
     if reply and reply.from_user and not reply.from_user.is_bot:
