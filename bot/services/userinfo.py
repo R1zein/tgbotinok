@@ -34,6 +34,7 @@ def esc(text: str | None) -> str:
 def estimate_registration(user_id: int) -> tuple[str, bool] | None:
     if user_id <= 0:
         return None
+    # ИСПРАВЛЕНО: Сравнение идет с ID самого первого анкора из списка
     if user_id < _ANCHORS[0][0]:
         return None
     if user_id > _ANCHORS[-1][0]:
@@ -256,4 +257,3 @@ class DossierRepo:
                 kw["acquaintances"] = [(uid, unames.get(uid)) for uid in all_ids]
             return kw
             
-    
