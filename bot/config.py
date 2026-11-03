@@ -28,6 +28,7 @@ class Config:
     username_cycle_interval: int
     max_usernames: int
     business_cache_days: int
+    proxy: str | None = None
 
     @property
     def userbot_configured(self) -> bool:
@@ -56,4 +57,5 @@ def load_config() -> Config:
         username_cycle_interval=_int("USERNAME_CYCLE_INTERVAL", 60),
         max_usernames=_int("MAX_USERNAMES", 10),
         business_cache_days=_int("BUSINESS_CACHE_DAYS", 14),
+        proxy=os.getenv("PROXY", "").strip() or None,
     )

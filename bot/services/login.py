@@ -17,7 +17,10 @@ async def main() -> None:
     load_dotenv()
     api_id = os.getenv("API_ID") or input("API_ID: ")
     api_hash = os.getenv("API_HASH") or input("API_HASH: ")
-    client = TelegramClient(StringSession(), int(api_id), api_hash)
+    from ..proxy import telethon_proxy
+
+    client = TelegramClient(StringSession(), int(api_id), api_hash,
+                            proxy=telethon_proxy(os.getenv("PROXY", "").strip() or None))
     await client.start()
     me = await client.get_me()
     print(f"\nВошли как {me.first_name} (@{me.username}).")

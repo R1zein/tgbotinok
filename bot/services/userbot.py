@@ -8,6 +8,7 @@ from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
 from ..config import Config
+from ..proxy import telethon_proxy
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class Userbot:
                 StringSession(self.config.userbot_session),
                 self.config.api_id,
                 self.config.api_hash,
+                proxy=telethon_proxy(self.config.proxy),
             )
             await self.client.connect()
             if not await self.client.is_user_authorized():

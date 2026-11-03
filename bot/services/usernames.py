@@ -21,6 +21,7 @@ from telethon.errors import (
 from telethon.tl import functions
 
 from ..db import Database
+from ..proxy import aiohttp_connector
 from .notifier import safe_send
 from .userbot import Userbot
 
@@ -49,8 +50,10 @@ def normalize_username(raw: str) -> str | None:
 
 
 class UsernameWatcher:
-    def __init__(self, bot: Bot, db: Database, userbot: Userbot, delay: float, cycle: int):
+    def __init__(self, bot: Bot, db: Database, userbot: Userbot, delay: float, cycle: int,
+                 proxy: str | None = None):
         self.bot, self.db, self.ub = bot, db, userbot
+        self.proxy = proxy
         self.delay, self.cycle = delay, cycle
         self._mt_cache: dict[str, tuple[float, str]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -60,7 +63,8 @@ class UsernameWatcher:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15),
                 headers={"User-Agent": "Mozilla/5.0 (compatible; TgHelperBot/1.0)"},
-                trust_env=True,
+                connector=aiohttp_connector(self.proxy),
+                trust_env=not self.proxy,
             )
         return self._session
 

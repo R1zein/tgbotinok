@@ -38,6 +38,16 @@ echo "=== 2/4 Настройки бота ==="
 ask "Токен бота от @BotFather" BOT_TOKEN
 ask "Ваш Telegram ID (узнать: @userinfobot)" ADMIN_IDS
 
+if curl -s -m 10 -o /dev/null https://api.telegram.org; then
+    echo "✅ Telegram с сервера доступен напрямую."
+else
+    echo "⚠️  api.telegram.org с сервера недоступен — понадобится прокси."
+fi
+echo "Прокси (например socks5://user:pass@1.2.3.4:1080). Если не нужен — оставьте пустым,"
+echo "чтобы убрать ранее заданный — введите: -"
+ask "Прокси" PROXY
+if [ "$(grep -E '^PROXY=' .env | cut -d= -f2-)" = "-" ]; then set_var PROXY ""; fi
+
 echo
 echo "=== 3/4 Юзербот (подарки и юзернеймы) ==="
 read -rp "Настроить юзербота сейчас? (y/n): " ub < /dev/tty

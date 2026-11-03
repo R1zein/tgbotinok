@@ -4,6 +4,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
@@ -53,13 +54,16 @@ async def main() -> None:
     db = Database(config.db_path)
     await db.connect()
 
-    bot = Bot(config.bot_token, default=DefaultBotProperties(
+    session = AiohttpSession(proxy=config.proxy) if config.proxy else None
+    if config.proxy:
+        log.info("Работаю через прокси %s", config.proxy.split("@")[-1])
+    bot = Bot(config.bot_token, session=session, default=DefaultBotProperties(
         parse_mode=ParseMode.HTML, link_preview_is_disabled=True,
     ))
     userbot = Userbot(config)
     await userbot.start()
     username_watcher = UsernameWatcher(bot, db, userbot, config.username_check_delay,
-                                       config.username_cycle_interval)
+                                       config.username_cycle_interval, config.proxy)
     gift_watcher = GiftWatcher(bot, db, userbot, config.gift_poll_interval)
 
     dp = Dispatcher(storage=MemoryStorage())

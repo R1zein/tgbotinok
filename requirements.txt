@@ -4,3 +4,5 @@ python-dotenv>=1.0
 Telethon>=1.45
 chess>=1.11
 aiohttp>=3.9
+aiohttp-socks>=0.9
+python-socks[asyncio]>=2.4
