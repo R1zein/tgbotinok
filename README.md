@@ -40,6 +40,16 @@
 Кнопка «🔎 Юзернеймы» → добавить один или несколько (`@name`, `t.me/name`). Когда юзернейм
 освободится (или появится на Fragment) — придёт уведомление. Лимит — `MAX_USERNAMES`.
 
+## Быстрая установка на сервер (удобно с телефона)
+
+```bash
+git clone -b claude/telegram-bot-helper-modules-pabn9i https://github.com/R1zein/tgbotinok.git
+cd tgbotinok
+bash setup.sh
+```
+Скрипт сам поставит Docker, спросит токен, ваш ID и данные юзербота, выполнит вход в аккаунт
+и запустит бота. Повторный запуск `bash setup.sh` позволяет поменять настройки.
+
 ## Установка
 
 1. **@BotFather**:

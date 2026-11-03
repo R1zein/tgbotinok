@@ -21,8 +21,17 @@ async def main() -> None:
     await client.start()
     me = await client.get_me()
     print(f"\nВошли как {me.first_name} (@{me.username}).")
-    print("\nUSERBOT_SESSION=" + client.session.save())
-    print("\nНикому не передавайте эту строку — она даёт полный доступ к аккаунту.")
+    session = client.session.save()
+    out = os.getenv("SESSION_OUT")
+    if out:
+        # setup.sh сам перенесёт строку в .env — на экран её не выводим
+        with open(out, "w") as f:
+            f.write(session)
+        os.chmod(out, 0o600)
+        print("Строка сессии сохранена.")
+    else:
+        print("\nUSERBOT_SESSION=" + session)
+        print("\nНикому не передавайте эту строку — она даёт полный доступ к аккаунту.")
     await client.disconnect()
 
 
