@@ -264,4 +264,11 @@ class DossierRepo:
                 async with db.execute(
                     f"SELECT user_id, username FROM users WHERE user_id IN ({ph})",
                     tuple(all_ids)
+                ) as cur:
+                    async for r in cur:
+                        unames[r["user_id"]] = r["username"]
+                        
+                kw["acquaintances"] = [(uid, unames.get(uid)) for uid in all_ids]
+                
+            return kw
                     
