@@ -235,9 +235,9 @@ async def on_business_message(message: Message, bot: Bot, db: Database):
         return
 
     text = (message.text or "").strip()
-      if is_owner and text.startswith("."):
-        if await dot_command(message, bot, db, conn, settings, mode, text):
-            return
+    if is_owner and text.startswith("."):
+      if await dot_command(message, bot, db, conn, settings, mode, text):
+          return
           
     if settings["biz_disappearing"] and message.reply_to_message:
         await check_disappearing(message, bot, db, conn)
