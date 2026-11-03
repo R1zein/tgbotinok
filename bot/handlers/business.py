@@ -1,4 +1,4 @@
-"""Бизнес-режим (Telegram Business, нужен Premium у владельца).
+"""Ассистент чатов (бизнес-подключение Telegram к аккаунту пользователя).
 
 Бот подключается к аккаунту владельца и получает сообщения его личных чатов:
 - кэширует входящие сообщения, чтобы при изменении/удалении прислать владельцу «было → стало»
@@ -150,9 +150,9 @@ async def send_media(bot: Bot, chat_id: int, media_type: str, file_id: str, capt
 async def on_connection(conn: BusinessConnection, bot: Bot, db: Database):
     can_reply, can_delete = await _save_connection(db, conn)
     if not conn.is_enabled:
-        text = "💼 Бизнес-ассистент отключён. Уведомления больше не будут приходить."
+        text = "💬 Ассистент чатов отключён. Уведомления больше не будут приходить."
     else:
-        text = "✅ <b>Бизнес-ассистент подключён!</b>\n\n" \
+        text = "✅ <b>Ассистент чатов подключён!</b>\n\n" \
                "Теперь я буду присылать сюда изменённые и удалённые сообщения ваших собеседников.\n" \
                "В любом личном чате можно писать: <code>.мут</code>, <code>.размут</code>, " \
                "<code>.шахматы</code>, <code>.шашки</code>."
@@ -204,7 +204,7 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         await db.set_business_mute(owner_id, chat_id, bc_id, mute)
         if mute:
             note = "" if conn["can_delete"] else \
-                "\n⚠️ У бота нет права удалять сообщения — выдайте его в настройках бизнеса."
+                "\n⚠️ У бота нет права удалять сообщения — выдайте его в настройках чат-бота (Настройки → Telegram для бизнеса → Чат-боты)."
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔊 Размутить", callback_data=f"bmute:{chat_id}")
             ]])

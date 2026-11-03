@@ -17,9 +17,9 @@ router = Router(name="start")
 MAIN_TEXT = (
     "👋 <b>Привет! Я бот-помощник.</b>\n\n"
     "Что я умею:\n"
-    "👥 <b>Чат-менеджер</b> — добавь меня в группу: мут/бан/кик/варны, калл, "
+    "👥 <b>Ассистент групп</b> — добавь меня в группу: мут/бан/кик/варны, калл, "
     "экономика и казино, мини-игры, RP-команды, шахматы и шашки.\n"
-    "💼 <b>Бизнес-ассистент</b> (Telegram Premium) — уведомления об изменённых и удалённых "
+    "💬 <b>Ассистент чатов</b> — подключи меня к своему аккаунту: уведомления об изменённых и удалённых "
     "сообщениях, сохранение исчезающих медиа, <code>.мут</code>, <code>.шахматы</code>, "
     "<code>.шашки</code> прямо в ЛС.\n"
     "🎁 <b>Подарки</b> — уведомления о новых улучшенных подарках и кто их улучшил.\n"
@@ -27,7 +27,7 @@ MAIN_TEXT = (
 )
 
 HELP_TEXT = (
-    "📖 <b>Команды в группах</b> (можно с / ! . или без префикса)\n\n"
+    "📖 <b>Ассистент групп</b> (команды можно с / ! . или без префикса)\n\n"
     "<b>Модерация</b> (админы, ответом или @юзернейм):\n"
     "<code>мут 30m причина</code>, <code>размут</code>, <code>бан 1d</code>, <code>разбан</code>, "
     "<code>кик</code>, <code>варн</code>, <code>снять варн</code>, <code>варны</code>\n"
@@ -47,7 +47,7 @@ HELP_TEXT = (
     "<b>Браки:</b> <code>брак</code>, <code>развод</code>, <code>мой брак</code>, <code>браки</code>\n"
     "<b>Настольные:</b> <code>шахматы</code>, <code>шашки</code> (ответом — вызвать игрока)\n\n"
     "<b>Настройки группы:</b> /settings (админы)\n\n"
-    "💼 <b>Бизнес-чаты</b> (пишете вы сами в ЛС с человеком):\n"
+    "💬 <b>Ассистент чатов</b> (пишете вы сами в ЛС с человеком):\n"
     "<code>.мут</code> / <code>.mute</code> — заглушить собеседника\n"
     "<code>.размут</code> / <code>.unmute</code> — снять заглушку\n"
     "<code>.шахматы</code> / <code>.chess</code>, <code>.шашки</code> / <code>.checkers</code>"
@@ -57,11 +57,11 @@ HELP_TEXT = (
 def main_kb(bot_username: str, is_admin: bool) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
-            text="➕ Добавить в группу",
+            text="👥 Ассистент групп — добавить в группу",
             url=f"https://t.me/{bot_username}?startgroup=true"
                 "&admin=delete_messages+restrict_members+pin_messages+invite_users",
         )],
-        [InlineKeyboardButton(text="💼 Бизнес-ассистент", callback_data="menu:biz"),
+        [InlineKeyboardButton(text="💬 Ассистент чатов", callback_data="menu:biz"),
          InlineKeyboardButton(text="🎁 Подарки", callback_data="menu:gifts")],
         [InlineKeyboardButton(text="🔎 Юзернеймы", callback_data="menu:un"),
          InlineKeyboardButton(text="📖 Помощь", callback_data="menu:help")],
@@ -117,9 +117,9 @@ async def biz_menu(db: Database, user_id: int, bot_username: str) -> tuple[str, 
     else:
         status = "❌ Не подключён"
     text = (
-        "💼 <b>Бизнес-ассистент</b>\n\n"
+        "💬 <b>Ассистент чатов</b>\n\n"
         f"Статус: {status}\n\n"
-        "<b>Как подключить</b> (нужен Telegram Premium):\n"
+        "<b>Как подключить:</b>\n"
         "Настройки → Telegram для бизнеса → Чат-боты → введите "
         f"@{bot_username} → разрешите читать и удалять сообщения.\n\n"
         "Уведомления будут приходить сюда, в этот чат.\n\n"
@@ -136,7 +136,7 @@ async def biz_menu(db: Database, user_id: int, bot_username: str) -> tuple[str, 
 @router.callback_query(F.data == "menu:biz")
 async def cb_biz(call: CallbackQuery, db: Database, bot: Bot):
     if not db.feature_enabled("business"):
-        return await call.answer("Бизнес-режим временно отключён администратором", show_alert=True)
+        return await call.answer("Ассистент чатов временно отключён администратором", show_alert=True)
     me = await bot.me()
     text, kb = await biz_menu(db, call.from_user.id, me.username)
     await call.message.edit_text(text, reply_markup=kb)
@@ -168,7 +168,7 @@ async def on_my_chat_member(event: ChatMemberUpdated, db: Database):
     await db.upsert_chat(chat.id, chat.title, chat.type, active=active)
     if active and event.old_chat_member.status in ("left", "kicked"):
         await event.answer(
-            "👋 Спасибо, что добавили меня!\n\n"
+            "👋 Спасибо, что добавили меня! Я — ассистент группы.\n\n"
             "Чтобы модерация работала, выдайте мне права администратора "
             "(удаление сообщений и блокировка участников).\n"
             "Настройки функций: /settings, список команд: /help"

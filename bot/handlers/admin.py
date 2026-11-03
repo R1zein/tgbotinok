@@ -66,7 +66,7 @@ async def cb_admin(call: CallbackQuery, db: Database, config: Config, userbot: U
             "📊 <b>Статистика</b>\n\n"
             f"👤 Пользователей: {s['users']} (заблокировано: {s['banned']})\n"
             f"👥 Групп: {s['groups']}\n"
-            f"💼 Бизнес-подключений: {s['business']}\n"
+            f"💬 Подключений ассистента чатов: {s['business']}\n"
             f"🎁 Подписок на подарки: {s['gift_subs']}\n"
             f"🔎 Отслеживаемых юзернеймов: {s['usernames']}\n"
             f"♟ Активных партий: {s['games']}",

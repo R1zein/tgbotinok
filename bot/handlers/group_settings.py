@@ -35,7 +35,7 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
 async def cmd_settings(message: Message, bot: Bot, db: Database):
     if not await message_from_admin(message, bot):
         return await message.reply("⛔ Настройки доступны только администраторам.")
-    await message.answer("⚙️ <b>Настройки группы</b>", reply_markup=await settings_kb(db, message.chat.id))
+    await message.answer("⚙️ <b>Ассистент групп — настройки</b>", reply_markup=await settings_kb(db, message.chat.id))
 
 
 @router.callback_query(F.data.startswith("gs:"))
