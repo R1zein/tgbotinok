@@ -440,35 +440,95 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     return False
 
 async def info_command(message: Message, bot: Bot, db, conn) -> None:
-# Получаем ID цели (из реплая или из текущего чата)
     reply = message.reply_to_message
+    
+    # 1. Определяем ID целевого пользователя
     if reply and reply.from_user and not reply.from_user.is_bot:
         target_id = reply.from_user.id
     else:
-        target_id = message.chat.id
+        target_id = message.from_user.id
 
-    # Делаем прямой запрос в твою рабочую таблицу users
-    user_row = await db.fetchone("SELECT id, username, first_name, created_at FROM users WHERE id = ?", (target_id,))
-    
-    if not user_row:
-        card = f"👤 <b>Пользователь не найден в базе данных бота.</b>\n🆔 ID: <code>{target_id}</code>"
-    else:
+    # 2. Запрашиваем данные целевого пользователя из таблицы users
+    user_row = await db.fetchone("SELECT id, username, first_name FROM users WHERE id = ?", (target_id,))
+    if user_row:
+        first_name = user_row['first_name']
         username_str = f"@{user_row['username']}" if user_row['username'] else "—"
-        card = (
-            f"ℹ️ <b>Информация о пользователе</b>\n\n"
-            f"👤 <b>Имя:</b> {user_row['first_name']}\n"
-            f"🔗 <b>Юзернейм:</b> {username_str}\n"
-            f"🆔 <b>ID:</b> <code>{user_row['id']}</code>\n"
-        )
-    
-    # Извлекаем ID бизнес-подключения и отправляем
-    bc_id = conn['id'] if 'id' in conn.keys() else conn['user_id']
+    else:
+        from_user = reply.from_user if (reply and reply.from_user) else message.from_user
+        first_name = from_user.first_name if from_user else "Пользователь"
+        username_str = f"@{from_user.username}" if (from_user and from_user.username) else "—"
+
+    # 3. ИЩЕМ ЗНАКОМЫХ (Через подарки и общие чаты в твоей родной базе)
+    gift_ids = set()
+    chat_ids = set()
+
+    # Ищем по подаркам в gift_edges
     try:
-        await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        gift_rows = await db.fetchall(
+            "SELECT to_id AS other FROM gift_edges WHERE from_id = ? UNION SELECT from_id FROM gift_edges WHERE to_id = ?",
+            (target_id, target_id)
+        )
+        gift_ids = {r['other'] for r in gift_rows} if gift_rows else set()
     except Exception:
         pass
 
+    # Ищем по общим чатам в chat_members
+    try:
+        chat_rows = await db.fetchall(
+            "SELECT DISTINCT cm2.user_id AS other FROM chat_members cm1 JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id WHERE cm1.user_id = ? AND cm2.user_id != ?",
+            (target_id, target_id)
+        )
+        chat_ids = {r['other'] for r in chat_rows} if chat_rows else set()
+    except Exception:
+        pass
+
+    all_ids = gift_ids | chat_ids
+    acquaintances_lines = []
+
+    if all_ids:
+        # Тянем юзернеймы найденных знакомых из таблицы users
+        try:
+            ph = ",". join("?" * len(all_ids))
+            user_rows = await db.fetchall(
+                f"SELECT id, username FROM users WHERE id IN ({ph})",
+                tuple(all_ids)
+            )
+            unames = {r['id']: r['username'] for r in user_rows} if user_rows else {}
+            
+            acquaintances_lines.append("\n👥 <b>Знакомые:</b>")
+            for uid in all_ids:
+                uname = unames.get(uid)
+                if uname:
+                    acquaintances_lines.append(f"- @{uname} [<code>{uid}</code>]")
+                else:
+                    acquaintances_lines.append(f"- ID: <code>{uid}</code>")
+        except Exception:
+            pass
     
+    if not acquaintances_lines:
+        acquaintances_lines.append("\n👥 <b>Знакомые:</b> не найдены")
+
+    # 4. Формируем финальную карточку
+    card = (
+        f"ℹ️ <b>Информация о пользователе</b>\n\n"
+        f"👤 <b>Имя:</b> {first_name}\n"
+        f"🔗 <b>Юзернейм:</b> {username_str}\n"
+        f"🆔 <b>ID:</b> <code>{target_id}</code>\n"
+        + "\n".join(acquaintances_lines)
+    )
+    
+    # 5. Извлекаем ID бизнес-подключения
+    bc_id = conn['id'] if 'id' in conn.keys() else conn['user_id']
+
+    # 6. Удаляем команду .инфа через проверенный метод delete_business
+    try:
+        chat_id = message.chat.id
+        await delete_business(bot, bc_id, chat_id, [message.message_id])
+    except Exception as e:
+        log.info("Не удалось удалить команду через delete_business: %s", e)
+
+            
+    # 7. Отправляем карточку
     try:
         await bot.send_message(
             chat_id=message.chat.id,
@@ -478,6 +538,7 @@ async def info_command(message: Message, bot: Bot, db, conn) -> None:
         )
     except Exception as e:
         log.info("Не удалось отправить карточку: %s", e)
+      
       
       
       
