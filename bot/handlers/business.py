@@ -24,14 +24,7 @@ from aiogram.types import (
 
 from ..db import Database
 from ..services.notifier import safe_send
-from ..services.textstyles import (
-    FORMAT_ALIASES,
-    FORMATS,
-    OFF_WORDS,
-    STYLE_ALIASES,
-    STYLES,
-    render,
-)
+from ..services.textstyles import OFF_WORDS, STYLE_ALIASES, STYLES, render
 from ..utils.text import mention, quote
 from .boardgames import start_business_game
 
@@ -240,66 +233,58 @@ async def flash(bot: Bot, bc_id: str, chat_id: int, message_id: int, text: str,
     task.add_done_callback(_bg_tasks.discard)
 
 
-def styles_help() -> str:
-    styles = "\n".join(f"• {label} — <code>.стиль {next(a for a, k in STYLE_ALIASES.items() if k == key)}</code>"
-                       for key, (label, _) in STYLES.items())
-    formats = "\n".join(f"• {label} — <code>.{next(a for a, k in FORMAT_ALIASES.items() if k == key)}</code>"
-                        for key, (label, _, _) in FORMATS.items())
-    return ("✨ <b>Стили сообщений</b> — ваши сообщения будут автоматически переписываться:\n"
-            f"{styles}\nВыключить: <code>.стиль выкл</code>\n\n"
-            "🔤 <b>Формат</b> — оформление всего вашего текста:\n"
-            f"{formats}\nВыключить: <code>.формат выкл</code>\n\n"
-            "Сбросить всё: <code>.обычный</code>. То же самое можно выбрать в меню бота → "
-            "💬 Ассистент чатов → ✨ Стиль и формат.")
+def _style_cmd(key: str) -> str:
+    return next(a for a, k in STYLE_ALIASES.items() if k == key)
+
+
+def commands_text() -> str:
+    styles = "\n".join(f"• <code>.{_style_cmd(key)}</code> — {label}" for key, (label, _) in STYLES.items())
+    return (
+        "📖 <b>Команды ассистента</b>\n\n"
+        "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
+        "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
+        "♟ <code>.шахматы</code> — партия в шахматы\n"
+        "⚪ <code>.шашки</code> — партия в шашки\n\n"
+        "✨ <b>Режимы текста</b> (повтор команды — выключить):\n"
+        f"{styles}\n"
+        "• <code>.обычный</code> — выключить режим\n\n"
+        "🔤 Жирный, курсив и другой формат текста — в меню бота → 💬 Ассистент чатов.\n"
+        "📖 <code>.команды</code> — этот список"
+    )
+
+
+HELP_CMDS = {"команды", "commands", "help", "помощь", "хелп"}
+RESET_CMDS = {"обычный", "normal", "стильвыкл"}
 
 
 async def style_command(message: Message, bot: Bot, db: Database, conn, settings: dict,
                         cmd: str, arg: str) -> bool:
+    """Режимы текста (пикми, пират…) включаются командой прямо в чате.
+    Формат (жирный, курсив…) настраивается в меню бота, как в TonzBot."""
     owner_id, bc_id, chat_id = conn["user_id"], conn["id"], message.chat.id
-    style, fmt = settings.get("msg_style", "none"), settings.get("msg_format", "none")
-    new_style, new_fmt = style, fmt
+    style = settings.get("msg_style", "none")
     if cmd in STYLE_ALIASES:
         key = STYLE_ALIASES[cmd]
         new_style = "none" if style == key else key
-    elif cmd in ("стиль", "style"):
-        if not arg:
-            await delete_business(bot, bc_id, chat_id, [message.message_id])
-            await safe_send(bot, conn["user_chat_id"], styles_help())
-            return True
+    elif cmd in ("стиль", "style", "режим"):
         if arg in OFF_WORDS:
             new_style = "none"
         elif arg in STYLE_ALIASES:
             new_style = STYLE_ALIASES[arg]
         else:
-            await flash(bot, bc_id, chat_id, message.message_id,
-                        "❓ Нет такого стиля. Список — <code>.стиль</code>")
+            await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
             return True
-    elif cmd in FORMAT_ALIASES:
-        key = FORMAT_ALIASES[cmd]
-        new_fmt = "none" if fmt == key else key
-    elif cmd in ("формат", "format"):
-        if arg in OFF_WORDS or not arg:
-            new_fmt = "none"
-        elif arg in FORMAT_ALIASES:
-            new_fmt = FORMAT_ALIASES[arg]
-        else:
-            await flash(bot, bc_id, chat_id, message.message_id,
-                        "❓ Нет такого формата. Список — <code>.стиль</code>")
-            return True
-    elif cmd in ("обычный", "сброс", "normal"):
-        new_style = new_fmt = "none"
+    elif cmd in RESET_CMDS:
+        new_style = "none"
     else:
         return False
     await db.set_user_setting(owner_id, "msg_style", new_style)
-    await db.set_user_setting(owner_id, "msg_format", new_fmt)
-    if new_style != style:
-        text = (f"✨ Стиль «{STYLES[new_style][0]}» включён~\nОтключить: <code>.{cmd}</code>"
-                if new_style != "none" else "✨ Стиль сообщений выключен")
-    elif new_fmt != fmt:
-        text = (f"🔤 Формат «{FORMATS[new_fmt][0]}» включён\nОтключить: <code>.{cmd}</code>"
-                if new_fmt != "none" else "🔤 Формат сообщений выключен")
+    if new_style != "none":
+        icon, label = STYLES[new_style][0].split(" ", 1)
+        text = (f"{icon} {label.split(' (')[0].lower()}-режим включён~\n\n"
+                f"чтобы отключить, введите <code>.{_style_cmd(new_style)}</code>")
     else:
-        text = "✨ Стиль и формат сброшены"
+        text = "✨ режим текста выключен"
     await flash(bot, bc_id, chat_id, message.message_id, text)
     return True
 
@@ -310,6 +295,9 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     cmd = parts[0].lower() if parts else ""
     arg = parts[1].strip().lower() if len(parts) > 1 else ""
     bc_id, chat_id, owner_id = conn["id"], message.chat.id, conn["user_id"]
+    if cmd in HELP_CMDS:
+        await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
+        return True
     if await style_command(message, bot, db, conn, settings, cmd, arg):
         return True
     if cmd in MUTE_CMDS | UNMUTE_CMDS and settings["biz_mute"]:

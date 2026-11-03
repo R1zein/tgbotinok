@@ -51,8 +51,10 @@ HELP_TEXT = (
     "<code>.мут</code> / <code>.mute</code> — заглушить собеседника\n"
     "<code>.размут</code> / <code>.unmute</code> — снять заглушку\n"
     "<code>.шахматы</code> / <code>.chess</code>, <code>.шашки</code> / <code>.checkers</code>\n"
-    "<code>.пикми</code>, <code>.стиль пират</code>, <code>.жирный</code> — автоизменение ваших "
-    "сообщений; <code>.стиль</code> — список стилей, <code>.обычный</code> — выключить"
+    "<code>.пикми</code>, <code>.пират</code>, <code>.гопник</code>… — режимы текста, "
+    "<code>.обычный</code> — выключить\n"
+    "<code>.команды</code> — все команды прямо в чате\n"
+    "Жирный/курсив и др. формат — в меню: 💬 Ассистент чатов → 🔤 Формат текста"
 )
 
 
@@ -131,7 +133,7 @@ async def biz_menu(db: Database, user_id: int, bot_username: str) -> tuple[str, 
     for key, label in USER_TOGGLES.items():
         mark = "✅" if settings.get(key) else "❌"
         rows.append([InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"biz:t:{key}")])
-    rows.append([InlineKeyboardButton(text="✨ Стиль и формат моих сообщений", callback_data="sty:menu")])
+    rows.append([InlineKeyboardButton(text="🔤 Формат текста", callback_data="sty:menu")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 

@@ -493,39 +493,47 @@ async def test_business_styles(env):
     await feed(upd(business_message=bmsg(OWNER, "привет")))
     assert not edits()
 
-    # .жирный — команда превращается в уведомление, потом сообщения становятся жирными
-    await feed(upd(business_message=bmsg(OWNER, ".жирный")))
+    # формат (жирный) — только в меню бота, как в TonzBot
+    await feed(cb(OWNER, "sty:menu", msg(OWNER, BOT_ID, "x")))
+    await feed(cb(OWNER, "sty:f:bold", msg(OWNER, BOT_ID, "x")))
     assert (await db.get_user_settings(OWNER))["msg_format"] == "bold"
-    assert "Жирный" in edits()[-1].text
     s.clear()
     await feed(upd(business_message=bmsg(OWNER, "как дела")))
     e = edits()[-1]
     assert e.text == "<b>как дела</b>" and e.business_connection_id == BC
+    # команды формата в чате больше не работают — сообщение просто оформляется как обычно
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, ".курсив")))
+    assert (await db.get_user_settings(OWNER))["msg_format"] == "bold"
 
-    # .пикми включает стиль, сообщения собеседника не меняются
+    # .пикми — режим текста командой в чате; команда превращается в уведомление
+    s.clear()
     await feed(upd(business_message=bmsg(OWNER, ".пикми")))
     assert (await db.get_user_settings(OWNER))["msg_style"] == "kawaii"
+    assert "пикми-режим включён" in edits()[-1].text and ".пикми" in edits()[-1].text
     s.clear()
     await feed(upd(business_message=bmsg(OTHER, "я собеседник")))
     assert not edits()
     await feed(upd(business_message=bmsg(OWNER, "хочу кушать")))
     assert edits()[-1].text.startswith("<b>") and edits()[-1].text != "<b>хочу кушать</b>"
 
-    # повторная команда выключает, .обычный сбрасывает всё
+    # повтор выключает, .пират переключает, .обычный выключает режим (формат остаётся)
     await feed(upd(business_message=bmsg(OWNER, ".пикми")))
     assert (await db.get_user_settings(OWNER))["msg_style"] == "none"
-    await feed(upd(business_message=bmsg(OWNER, ".стиль пират")))
+    await feed(upd(business_message=bmsg(OWNER, ".пират")))
     assert (await db.get_user_settings(OWNER))["msg_style"] == "pirate"
     await feed(upd(business_message=bmsg(OWNER, ".обычный")))
     st = await db.get_user_settings(OWNER)
-    assert st["msg_style"] == "none" and st["msg_format"] == "none"
-    s.clear()
-    await feed(upd(business_message=bmsg(OWNER, ".стиль")))  # список стилей — в ЛС бота
-    assert any("Стили сообщений" in t for t in s.texts())
+    assert st["msg_style"] == "none" and st["msg_format"] == "bold"
 
-    # меню в боте
-    for data in ("sty:menu", "sty:s:robot", "sty:f:italic"):
-        await feed(cb(OWNER, data, msg(OWNER, BOT_ID, "x")))
-    st = await db.get_user_settings(OWNER)
-    assert st["msg_style"] == "robot" and st["msg_format"] == "italic"
-    assert "<i>🤖 БИП-БУП." in edits()[-1].text
+    # .команды — список прямо в чате (команда превращается в список)
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, ".команды")))
+    e = edits()[-1]
+    assert "Команды ассистента" in e.text and ".мут" in e.text and ".пикми" in e.text
+    assert e.chat_id == OTHER and e.business_connection_id == BC
+
+    # в меню бота можно выключить активный режим
+    await feed(upd(business_message=bmsg(OWNER, ".робот")))
+    await feed(cb(OWNER, "sty:s:none", msg(OWNER, BOT_ID, "x")))
+    assert (await db.get_user_settings(OWNER))["msg_style"] == "none"
