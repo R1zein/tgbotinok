@@ -140,7 +140,7 @@ class DossierRepo:
         if db_path is None:
             # Находим папку, где лежит сам файл userinfo.py, и создаем dossier.db прямо там
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            self.db_path = os.path.join(current_dir, "dossier.db")
+            self. db_path = "data/bot.db"
         else:
             self.db_path = db_path
             
