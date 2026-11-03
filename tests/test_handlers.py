@@ -682,3 +682,26 @@ async def test_reply_to_old_photo_is_not_disappearing(env):
     s.clear()
     await feed(upd(business_message=_bmsg(OTHER, OWNER, "ок", reply_to_message=normal)))
     assert "SendPhoto" not in s.names()
+
+
+async def test_business_info_card(env):
+    """.инфа присылает владельцу карточку из открытых данных и не раскрывает связи."""
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".инфа")))
+    # команда удаляется из чата, карточка приходит владельцу в ЛС
+    assert "DeleteBusinessMessages" in s.names()
+    card = [c for c in s.calls if type(c).__name__ == "SendMessage" and c.chat_id == OWNER][-1]
+    assert "Информация" in card.text and f"<code>{OTHER}</code>" in card.text
+    # никаких «знакомых» и «групп» — карты связей нет
+    low = card.text.lower()
+    assert "знаком" not in low and "группы:" not in low
+
+    # по ответу на сообщение — карточка про автора сообщения
+    target = _bmsg(OTHER, OTHER, "привет")
+    await feed(upd(business_message=target))
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".whois", reply_to_message=target)))
+    card = [c for c in s.calls if type(c).__name__ == "SendMessage" and c.chat_id == OWNER][-1]
+    assert f"<code>{OTHER}</code>" in card.text

@@ -27,6 +27,7 @@ from aiogram.types import (
 from ..db import Database
 from ..services.notifier import safe_send
 from ..services.textstyles import OFF_WORDS, STYLE_ALIASES, STYLES, render
+from ..services.userinfo import format_card
 from ..utils.text import mention, quote
 from .boardgames import start_business_game
 
@@ -313,6 +314,7 @@ def commands_text() -> str:
         "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
         "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
         "🪞 <code>.клон</code> — повторять каждое сообщение собеседника (ещё раз — выключить)\n"
+        "ℹ️ <code>.инфа</code> — ID и примерная дата регистрации собеседника (придёт вам в ЛС)\n"
         f"🔁 <code>.спам текст 5</code> — отправить текст несколько раз (до {SPAM_MAX})\n"
         "♟ <code>.шахматы</code> — партия в шахматы\n"
         "⚪ <code>.шашки</code> — партия в шашки\n\n"
@@ -325,6 +327,7 @@ def commands_text() -> str:
 
 
 HELP_CMDS = {"команды", "commands", "help", "помощь", "хелп"}
+INFO_CMDS = {"инфа", "инфо", "info", "whois", "id"}
 CLONE_CMDS = {"клон", "clone", "зеркало", "mirror"}
 SPAM_CMDS = {"спам", "spam"}
 SPAM_MAX = 10
@@ -386,6 +389,9 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     if cmd in HELP_CMDS:
         await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
         return True
+    if cmd in INFO_CMDS:
+        await info_command(message, bot, conn)
+        return True
     if await style_command(message, bot, db, conn, mode, cmd, arg):
         return True
     if cmd in CLONE_CMDS:
@@ -433,6 +439,22 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         await start_business_game(bot, db, kind, bc_id, chat_id, owner, other)
         return True
     return False
+
+
+async def info_command(message: Message, bot: Bot, conn) -> None:
+    """Карточка собеседника (или того, на чьё сообщение ответили) — в ЛС бота владельцу."""
+    reply = message.reply_to_message
+    if reply and reply.from_user and not reply.from_user.is_bot:
+        u = reply.from_user
+        card = format_card(user_id=u.id, first_name=u.first_name, last_name=u.last_name,
+                           username=u.username, is_bot=u.is_bot, is_premium=bool(u.is_premium),
+                           language_code=u.language_code)
+    else:
+        chat = message.chat
+        card = format_card(user_id=chat.id, first_name=chat.first_name, last_name=chat.last_name,
+                           username=chat.username)
+    await delete_business(bot, conn["id"], message.chat.id, [message.message_id])
+    await safe_send(bot, conn["user_chat_id"], card)
 
 
 async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> None:
