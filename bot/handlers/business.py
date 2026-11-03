@@ -440,59 +440,40 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     return False
 
 
-async def info_command(message: Message, bot: Bot, db, conn) -> None:
-    """Карточка собеседника — исправленная версия без использования модуля time."""
+    # Получаем ID цели (из реплая или из текущего чата)
     reply = message.reply_to_message
     if reply and reply.from_user and not reply.from_user.is_bot:
-        target_user = reply.from_user
-        target_id = target_user.id
-        username = target_user.username
-        first_name = target_user.first_name or ""
-        last_name = target_user.last_name or ""
-        f_name = f"{first_name} {last_name}".strip() or "Пользователь"
+        target_id = reply.from_user.id
     else:
-        target_chat = message.chat
-        target_id = target_chat.id
-        username = target_chat.username
-        first_name = target_chat.first_name or ""
-        last_name = target_chat.last_name or ""
-        f_name = f"{first_name} {last_name}".strip() or "Пользователь"
+        target_id = message.chat.id
 
-    # Абсолютный импорт
-    from bot.services.userinfo import DossierRepo, format_card
-    repo = DossierRepo()
-
-    # Используем время создания сообщения из Telegram вместо модуля time
-    msg_ts = int(message.date.timestamp())
-
-    await repo.touch_user(
-        user_id=target_id,
-        username=username,
-        full_name=f_name,
-        ts=msg_ts
-    )
-
-    card_kwargs = await repo.build_card_kwargs(target_id)
-    card_kwargs.update({
-        "first_name": first_name,
-        "last_name": last_name,
-    })
+    # Делаем прямой запрос в твою рабочую таблицу users
+    user_row = await db.fetchone("SELECT id, username, first_name, created_at FROM users WHERE id = ?", (target_id,))
     
-    card = format_card(**card_kwargs)
+    if not user_row:
+        card = f"👤 <b>Пользователь не найден в базе данных бота.</b>\n🆔 ID: <code>{target_id}</code>"
+    else:
+        username_str = f"@{user_row['username']}" if user_row['username'] else "—"
+        card = (
+            f"ℹ️ <b>Информация о пользователе</b>\n\n"
+            f"👤 <b>Имя:</b> {user_row['first_name']}\n"
+            f"🔗 <b>Юзернейм:</b> {username_str}\n"
+            f"🆔 <b>ID:</b> <code>{user_row['id']}</code>\n"
+        )
     
-    # Извлекаем ID подключения и отправляем
-    bc_id = conn.id if hasattr(conn, "id") else conn.user_id
+    # Извлекаем ID бизнес-подключения и отправляем
+    bc_id = conn.id if hasattr(conn, 'id') else conn.user_id
+    await delete_business_message(bot, bc_id, message.chat.id, [message.message_id])
     
-    await delete_business(bot, bc_id, message.chat.id, [message.message_id])
     try:
         await bot.send_message(
-            chat_id=message.chat.id, 
-            text=card, 
-            business_connection_id=bc_id
+            chat_id=message.chat.id,
+            text=card,
+            business_connection_id=bc_id,
+            parse_mode="HTML"
         )
-    except TelegramBadRequest as e:
+    except Exception as e:
         log.info("Не удалось отправить карточку: %s", e)
-      
       
       
       
