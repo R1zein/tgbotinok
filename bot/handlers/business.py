@@ -210,7 +210,13 @@ async def on_connection(conn: BusinessConnection, bot: Bot, db: Database):
                     "работать."
     await safe_send(bot, conn.user_chat_id, text)
 
-
+@router.business_message(F.text == ".инфа")
+async def info_command_handler(message: Message, bot: Bot, db: Database):
+    bc_id = message.business_connection_id
+    conn = await get_connection(bot, db, bc_id)
+    if not conn or not conn["enabled"]:
+        return
+    await info_command(message, bot, conn)
 # ---------- новые сообщения ----------
 
 @router.business_message()
