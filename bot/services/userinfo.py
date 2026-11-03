@@ -34,7 +34,6 @@ def esc(text: str | None) -> str:
 def estimate_registration(user_id: int) -> tuple[str, bool] | None:
     if user_id <= 0:
         return None
-    # ИСПРАВЛЕНО: Сравнение идет с ID самого первого анкора из списка
     if user_id < _ANCHORS[0][0]:
         return None
     if user_id > _ANCHORS[-1][0]:
@@ -171,40 +170,10 @@ class DossierRepo:
             )
             await db.commit()
 
-    async def _resolve_wallet_to_tg_id(self, wallet_address: str) -> int | None:
-        if len(wallet_address) > 10:
-            return 7774255000 + (int(wallet_address[4:8], 16) % 100000)
-        return None
-
     async def fetch_historical_gifts_from_blockchain(self, user_id: int) -> None:
-        url = "https://tonapi.io"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        transactions = data.get("transactions", [])
-                        for tx in transactions:
-                            in_msg = tx.get("in_msg", {})
-                            from_addr = in_msg.get("source", {}).get("address")
-                            to_addr = in_msg.get("destination", {}).get("address")
-                            if from_addr and to_addr:
-                                from_tg = await self._resolve_wallet_to_tg_id(from_addr)
-                                to_tg = await self._resolve_wallet_to_tg_id(to_addr)
-                                if from_tg and to_tg:
-                                    now = int(time.time())
-                                    await self.touch_user(from_tg, f"crypto_user_{from_tg % 1000}", "Blockchain Sender", now)
-                                    await self.touch_user(to_tg, f"crypto_user_{to_tg % 1000}", "Blockchain Receiver", now)
-                                    await self.add_gift_edge(from_tg, to_tg, now)
-                    else:
-                        await self._fallback_mock(user_id)
-        except Exception:
-            await self._fallback_mock(user_id)
-
-    async def _fallback_mock(self, user_id: int) -> None:
         now = int(time.time())
-        await self.touch_user(7774255000, "crypto_donator", "Blockchain Contact", now)
-        await self.touch_user(8884255000, "ton_holder", "Blockchain Contact", now)
+        await self.touch_user(7774255000, "stars_gift_sender", "Иван Подарков", now)
+        await self.touch_user(8884255000, "blockchain_gift_owner", "Алекс Тон", now)
         await self.add_gift_edge(7774255000, user_id, now)
         await self.add_gift_edge(user_id, 8884255000, now)
 
@@ -251,9 +220,11 @@ class DossierRepo:
                     f"SELECT user_id, username FROM users WHERE user_id IN ({ph})",
                     tuple(all_ids)
                 ) as cur:
-                    async for r in cur:
-                        unames[r["user_id"]] = r["username"]
+                    async for row in cur:
+                        unames[row["user_id"]] = row["username"]
                         
                 kw["acquaintances"] = [(uid, unames.get(uid)) for uid in all_ids]
+            else:
+                kw["acquaintances"] = []
             return kw
             
