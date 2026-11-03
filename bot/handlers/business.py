@@ -7,7 +7,9 @@
 - команды владельца в чате: .мут / .размут, .шахматы, .шашки.
 """
 import asyncio
+import html
 import logging
+import re
 import time
 
 from aiogram import Bot, F, Router
@@ -45,6 +47,30 @@ CHESS_CMDS = {"chess", "шахматы"}
 CHECKERS_CMDS = {"checkers", "шашки"}
 
 _self_deleted: dict[tuple[str, int, int], float] = {}
+
+# Тексты, которые наш бот сам поставил в чужие сообщения (режимы текста, формат, команды).
+# Если собеседник тоже пользуется этим ботом, его сообщения правит наш же бот — такие правки
+# не должны приходить второму пользователю как «сообщение изменено».
+# Ключ — (id автора, текст); ID сообщений у двух сторон личного чата разные, поэтому сверяем текст.
+_bot_edits: dict[tuple[int, str], float] = {}
+_bc_owner: dict[str, int] = {}  # id подключения -> владелец
+BOT_EDIT_TTL = 600
+
+
+def _plain(text_html: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", text_html)).strip()
+
+
+def remember_bot_edit(author_id: int, text_html: str) -> None:
+    now = time.time()
+    for k in [k for k, ts in _bot_edits.items() if now - ts > BOT_EDIT_TTL]:
+        _bot_edits.pop(k, None)
+    _bot_edits[(author_id, _plain(text_html))] = now
+
+
+def is_bot_edit(author_id: int, text: str | None) -> bool:
+    ts = _bot_edits.get((author_id, (text or "").strip()))
+    return ts is not None and time.time() - ts <= BOT_EDIT_TTL
 
 
 def extract_media(m: Message) -> tuple[str | None, str | None]:
@@ -84,6 +110,8 @@ async def get_connection(bot: Bot, db: Database, bc_id: str):
             return None
         await _save_connection(db, conn)
         row = await db.get_business_connection(bc_id)
+    if row:
+        _bc_owner[bc_id] = row["user_id"]
     return row
 
 
@@ -242,6 +270,7 @@ async def apply_style(message: Message, bot: Bot, conn, style: str, fmt: str) ->
     new = render(message.text, message.html_text, style, fmt)
     if not new or len(new) > 4096:
         return
+    remember_bot_edit(conn["user_id"], new)
     try:
         await bot.edit_message_text(new, chat_id=message.chat.id, message_id=message.message_id,
                                     business_connection_id=conn["id"])
@@ -255,6 +284,7 @@ _bg_tasks: set[asyncio.Task] = set()
 async def flash(bot: Bot, bc_id: str, chat_id: int, message_id: int, text: str,
                 seconds: int = 5) -> None:
     """Превращает команду владельца в короткое уведомление и удаляет его через пару секунд."""
+    remember_bot_edit(_bc_owner.get(bc_id, 0), text)
     try:
         await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id,
                                     business_connection_id=bc_id)
@@ -466,6 +496,8 @@ async def on_business_edit(message: Message, bot: Bot, db: Database):
     bot_command = bool(message.sender_business_bot or (old and old["auto"])
                        or is_automatic(old["text"] if old else None) or is_automatic(new_text))
     await cache(db, message, bc_id, auto=bot_command)
+    if is_bot_edit(sender.id, new_text):
+        return  # это наш же бот применил режим текста/формат у собеседника
     settings = await db.get_user_settings(conn["user_id"])
     if not settings["biz_edits"]:
         return

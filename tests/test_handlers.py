@@ -611,3 +611,53 @@ async def test_business_ignores_automatic_changes(env):
     # обычная правка человеком через минуту — показываем
     await feed(upd(edited_business_message=dict(m, text="исправил", edit_date=now)))
     assert any("Было" in t and "исправил" in t for t in s.texts())
+
+
+async def test_business_both_users_on_our_bot(env):
+    """Собеседник тоже подключил нашего бота и включил режим текста: правки, которые
+    наш бот делает в его сообщениях, не должны приходить второму пользователю."""
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    BC2 = "bc-2"
+    await feed(upd(message=msg(OTHER, OTHER, "/start")))
+    await feed(upd(business_connection=BusinessConnection.model_validate({
+        "id": BC2, "user": user(OTHER), "user_chat_id": OTHER, "date": int(time.time()),
+        "is_enabled": True, "rights": {"can_reply": True, "can_delete_all_messages": True},
+    })))
+
+    def via_other(text):  # сообщение собеседника, как его видит его собственное подключение
+        m = msg(OWNER, OTHER, text)
+        m["business_connection_id"] = BC2
+        return m
+
+    # собеседник включает у себя пикми-режим в чате со мной
+    s.clear()
+    await feed(upd(business_message=via_other(".пикми")))
+    flash_text = [c for c in s.calls if type(c).__name__ == "EditMessageText"][-1].text
+    # ...и я вижу, как его команда превращается в уведомление — это не показываем
+    now = int(time.time())
+    seen_cmd = _bmsg(OTHER, OTHER, ".пикми")
+    seen_cmd["date"] = now - 120
+    await feed(upd(business_message=seen_cmd))
+
+    # он пишет сообщение; у меня оно тоже появляется (ID у сторон разные)
+    seen = _bmsg(OTHER, OTHER, "хочу кушать")
+    seen["date"] = now - 60
+    await feed(upd(business_message=seen))
+    s.clear()
+    await feed(upd(business_message=via_other("хочу кушать")))
+    styled_html = [c for c in s.calls if type(c).__name__ == "EditMessageText"][-1].text
+    import html as _html
+    import re as _re
+    styled = _html.unescape(_re.sub(r"<[^>]+>", "", styled_html))
+
+    # правка пришла ко мне с задержкой (дольше окна в 5 секунд)
+    s.clear()
+    await feed(upd(edited_business_message=dict(seen, text=styled, edit_date=now)))
+    await feed(upd(edited_business_message=dict(
+        seen_cmd, text=_html.unescape(_re.sub(r"<[^>]+>", "", flash_text)), edit_date=now)))
+    assert not [t for t in s.texts() if "изменено" in t.lower()]
+
+    # а обычная правка человеком по-прежнему приходит
+    await feed(upd(edited_business_message=dict(seen, text="передумал", edit_date=now + 1)))
+    assert any("Было" in t and "передумал" in t for t in s.texts())
