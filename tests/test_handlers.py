@@ -661,3 +661,24 @@ async def test_business_both_users_on_our_bot(env):
     # а обычная правка человеком по-прежнему приходит
     await feed(upd(edited_business_message=dict(seen, text="передумал", edit_date=now + 1)))
     assert any("Было" in t and "передумал" in t for t in s.texts())
+
+
+async def test_reply_to_old_photo_is_not_disappearing(env):
+    """Ответ на обычное фото, отправленное до запуска/подключения бота, — не «исчезающее»."""
+    dp, bot, s, db, feed = env
+    await _connect_business(feed)
+    old = _bmsg(OTHER, OTHER, None,
+                photo=[{"file_id": "OLD", "file_unique_id": "o", "width": 1, "height": 1}])
+    old["date"] = int(time.time()) - 3600
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, "красиво", reply_to_message=old)))
+    assert "SendPhoto" not in s.names()
+    assert not any("Исчезающее" in t for t in s.texts())
+
+    # обычное фото, пришедшее при работающем боте, есть в кэше — тоже не «исчезающее»
+    normal = _bmsg(OTHER, OTHER, None,
+                   photo=[{"file_id": "NORM", "file_unique_id": "n", "width": 1, "height": 1}])
+    await feed(upd(business_message=normal))
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, "ок", reply_to_message=normal)))
+    assert "SendPhoto" not in s.names()

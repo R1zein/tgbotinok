@@ -39,6 +39,8 @@ MEDIA_NAMES = {
     "video_note": "кружок", "audio": "аудио", "sticker": "стикер", "document": "файл",
 }
 DISAPPEARING_TYPES = ("photo", "video", "voice", "video_note")
+# Время запуска процесса: всё обычное медиа, пришедшее позже, бот гарантированно закэшировал
+STARTED_AT = time.time()
 SELF_DELETED_TTL = 300
 
 MUTE_CMDS = {"mute", "мут", "заглушить"}
@@ -443,6 +445,12 @@ async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> 
     cached = await db.get_business_message(conn["id"], reply.chat.id, reply.message_id)
     if cached and cached["file_id"]:
         return  # обычное медиа, уже было в кэше
+    # Telegram не помечает исчезающее медиа. Признак — его нет в кэше, хотя бот в момент отправки
+    # уже работал и был подключён (обычное медиа тогда закэшировалось бы). Медиа, отправленное
+    # до подключения или пока бот был выключен, не трогаем — иначе обычное фото выдаётся за временное.
+    sent_at = _ts(reply.date)
+    if sent_at < STARTED_AT - 1 or sent_at < (conn["updated_at"] or 0) - 1:
+        return
     u = reply.from_user
     caption = f"🔥 <b>Исчезающее {MEDIA_NAMES[mtype]}</b>\n👤 {who(u.id, u.full_name, u.username)}"
     if reply.caption:
