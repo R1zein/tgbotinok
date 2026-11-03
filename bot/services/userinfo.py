@@ -233,7 +233,7 @@ class DossierRepo:
             try:
                 ph = ",".join("?" * len(all_ids))
                 async with db.execute(
-                    f"SELECT user_id, username FROM users WHERE user_id IN ({ph})",
+                    f"SELECT user_id, username FROM user WHERE user_id IN ({ph})",
                     tuple(all_ids)) as cur:
                     async for row in cur:
                         unames[row["user_id"]] = row["username"]
