@@ -183,8 +183,7 @@ class DossierRepo:
         await self.touch_user(8884255000, "blockchain_gift_owner", "Алекс Тон", now)
         await self.add_gift_edge(7774255000, user_id, now)
         await self.add_gift_edge(user_id, 8884255000, now)
-
-         async def build_card_kwargs(self, user_id: int) -> dict:
+    async def build_card_kwargs(self, user_id: int) -> dict:
         kw: dict = {"user_id": user_id}
         
         async with aiosqlite.connect(self.db_path) as db:
@@ -196,18 +195,13 @@ class DossierRepo:
                     kw["username"] = row["username"]
             
             async with db.execute(
-                """SELECT to_id AS other FROM gift_edges WHERE from_id=?
-                UNION
-                SELECT from_id FROM gift_edges WHERE to_id=?""",
+                "SELECT to_id AS other FROM gift_edges WHERE from_id=? UNION SELECT from_id FROM gift_edges WHERE to_id=?",
                 (user_id, user_id)
             ) as cur:
                 gift_ids = {r["other"] async for r in cur}
             
             async with db.execute(
-                """SELECT DISTINCT cm2.user_id AS other
-                FROM chat_members cm1
-                JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id
-                WHERE cm1.user_id=? AND cm2.user_id != ?""",
+                "SELECT DISTINCT cm2.user_id AS other FROM chat_members cm1 JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id WHERE cm1.user_id=? AND cm2.user_id != ?",
                 (user_id, user_id)
             ) as cur:
                 chat_ids = {r["other"] async for r in cur}
