@@ -463,7 +463,11 @@ async def info_command(message: Message, bot: Bot, db, conn) -> None:
     
     # Извлекаем ID бизнес-подключения и отправляем
     bc_id = conn['id'] if 'id' in conn.keys() else conn['user_id']
-    await delete_business_message(bot, bc_id, message.chat.id, [message.message_id])
+    try:
+        await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+    except Exception:
+        pass
+
     
     try:
         await bot.send_message(
