@@ -59,31 +59,38 @@ _self_deleted: dict[tuple[str, int, int], float] = {}
 _bot_edits: dict[tuple[int, str], float] = {}
 _bc_owner: dict[str, int] = {}  # id подключения -> владелец
 
-# Пункт 2: распознаём попытку собеседника замутить владельца командой чужого бота
+# Пункт 2: распознаём команды чужого бота к владельцу (мут, докс) и отвечаем «защитой».
+# Реальной блокировки это не даёт — чужой бот работает через подключение собеседника.
 RIVAL_MUTE = {"мут", "mute", "мьют", "замутить", "заглушить"}
+RIVAL_DOX = {"докс", "dox", "doxx", "пробив", "пробить", "деанон", "deanon"}
 RIVAL_NAME = "esgram"
 _rival_cooldown: dict[int, float] = {}
 RIVAL_COOLDOWN = 30
 
 
-def is_rival_mute(text: str | None) -> bool:
+def rival_command(text: str | None) -> str | None:
+    """'mute' / 'dox' — если собеседник прислал команду чужого бота, иначе None."""
     if not text:
-        return False
-    word = text.strip().split(maxsplit=1)[0].lstrip("./!").lower()
-    word = word.split("@", 1)[0]
-    return word in RIVAL_MUTE
+        return None
+    word = text.strip().split(maxsplit=1)[0].lstrip("./!").lower().split("@", 1)[0]
+    if word in RIVAL_MUTE:
+        return "mute"
+    if word in RIVAL_DOX:
+        return "dox"
+    return None
 
 
-async def rival_guard(bot: Bot, bc_id: str, chat_id: int) -> None:
+async def rival_guard(bot: Bot, bc_id: str, chat_id: int, kind: str) -> None:
     now = time.time()
     if now - _rival_cooldown.get(chat_id, 0) < RIVAL_COOLDOWN:
         return
     _rival_cooldown[chat_id] = now
+    msgs = {
+        "mute": f"🛡 Не сработает — у меня защита от {RIVAL_NAME}.",
+        "dox": f"🛡 Досье на меня не собрать — у меня защита от {RIVAL_NAME}.",
+    }
     try:
-        await bot.send_message(
-            chat_id, f"🛡 Не сработает — у меня защита от {RIVAL_NAME}.",
-            business_connection_id=bc_id,
-        )
+        await bot.send_message(chat_id, msgs[kind], business_connection_id=bc_id)
     except TelegramBadRequest as e:
         log.info("rival_guard: %s", e)
 BOT_EDIT_TTL = 600
@@ -255,9 +262,10 @@ async def on_business_message(message: Message, bot: Bot, db: Database, config: 
     mode = await db.get_chat_mode(owner_id, message.chat.id)
 
     if not is_owner:
-        # Пункт 2: собеседник пытается командой своего бота замутить владельца — отвечаем «защитой»
-        if is_rival_mute(message.text) and conn["can_reply"]:
-            await rival_guard(bot, bc_id, message.chat.id)
+        # Пункт 2: собеседник командой чужого бота пытается замутить/доксить владельца
+        rk = rival_command(message.text)
+        if rk and conn["can_reply"]:
+            await rival_guard(bot, bc_id, message.chat.id, rk)
         if settings["biz_mute"] and await db.is_business_muted(owner_id, message.chat.id):
             await delete_business(bot, bc_id, message.chat.id, [message.message_id])
             return

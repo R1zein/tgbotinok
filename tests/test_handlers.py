@@ -741,3 +741,10 @@ async def test_creator_protection_and_rival_business(env):
     s.clear()
     await feed(upd(business_message=bmsg(ADMIN, "мут")))
     assert not any("esgram" in t.lower() for t in s.texts())
+
+    # .докс собеседника тоже получает ответ-защиту (после кулдауна)
+    import bot.handlers.business as _biz
+    _biz._rival_cooldown.clear()
+    s.clear()
+    await feed(upd(business_message=bmsg(ADMIN, ".докс")))
+    assert any("esgram" in t.lower() and "досье" in t.lower() for t in s.texts())
