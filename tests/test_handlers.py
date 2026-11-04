@@ -27,9 +27,10 @@ from bot.services.userbot import Userbot
 from bot.services.usernames import UsernameWatcher
 
 BOT_ID, OWNER, ADMIN, USER, OTHER = 42, 100, 200, 300, 400
+ADMIN2 = 250  # второй админ чата, не создатель бота
 GROUP = -1001
 BC = "bc-1"
-NAMES = {OWNER: "Owner", ADMIN: "Admin", USER: "User", OTHER: "Other", BOT_ID: "Bot"}
+NAMES = {OWNER: "Owner", ADMIN: "Admin", ADMIN2: "Admin2", USER: "User", OTHER: "Other", BOT_ID: "Bot"}
 
 
 class FakeSession(BaseSession):
@@ -56,7 +57,7 @@ class FakeSession(BaseSession):
             return User(id=BOT_ID, is_bot=True, first_name="Bot", username="testbot").as_(bot)
         if name == "GetChatMember":
             u = User(id=method.user_id, is_bot=False, first_name=NAMES.get(method.user_id, "X"))
-            if method.user_id == ADMIN:
+            if method.user_id in (ADMIN, ADMIN2):
                 return ChatMemberAdministrator(
                     user=u, can_be_edited=False, is_anonymous=False, can_manage_chat=True,
                     can_delete_messages=True, can_manage_video_chats=True,
@@ -684,27 +685,59 @@ async def test_reply_to_old_photo_is_not_disappearing(env):
     assert "SendPhoto" not in s.names()
 
 
-async def test_business_info_card(env):
-    """.инфа присылает владельцу карточку из открытых данных и не раскрывает связи."""
+async def test_creator_protection_group(env):
+    """Создателя бота (ADMIN в admin_ids) нельзя замутить/забанить; мут — отражается на писавшего."""
     dp, bot, s, db, feed = env
-    await _connect_business(feed)
+    creator = msg(GROUP, ADMIN, "я создатель")
+    await feed(upd(message=creator))
+    # ADMIN2 — второй админ чата, пытается замутить создателя
     s.clear()
-    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".инфа")))
-    # команда удаляется из чата, карточка приходит владельцу в ЛС
-    assert "DeleteBusinessMessages" in s.names()
-    card = [c for c in s.calls if type(c).__name__ == "SendMessage"
-            and getattr(c, "business_connection_id", None) == BC][-1]
-    assert card.chat_id == OTHER  # карточка публикуется в чат, а не в ЛС
-    assert "Информация" in card.text and f"<code>{OTHER}</code>" in card.text
-    assert "приблиз" not in card.text.lower() and "может отлич" not in card.text.lower()
-    low = card.text.lower()
-    assert "знаком" not in low and "группы:" not in low
+    await feed(upd(message=msg(GROUP, ADMIN2, "мут", reply_to=creator)))
+    assert any("создател" in t.lower() for t in s.texts())
+    # создатель НЕ замучен; замучен сам писавший (ADMIN2)
+    restricts = [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+    assert restricts and all(c.user_id == ADMIN2 for c in restricts)
+    assert all(c.user_id != ADMIN for c in restricts)
 
-    # по ответу на сообщение — карточка про автора сообщения
-    target = _bmsg(OTHER, OTHER, "привет")
-    await feed(upd(business_message=target))
+    # бан создателя — только сообщение, никого не банит
     s.clear()
-    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".whois", reply_to_message=target)))
-    card = [c for c in s.calls if type(c).__name__ == "SendMessage"
-            and getattr(c, "business_connection_id", None) == BC][-1]
-    assert card.chat_id == OTHER and f"<code>{OTHER}</code>" in card.text
+    await feed(upd(message=msg(GROUP, ADMIN2, "бан", reply_to=creator)))
+    assert "BanChatMember" not in s.names()
+    assert any("создател" in t.lower() for t in s.texts())
+
+    # кик создателя — тоже только сообщение
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN2, "кик", reply_to=creator)))
+    assert "BanChatMember" not in s.names()
+
+
+async def test_creator_protection_and_rival_business(env):
+    """В ЛС: .мут на создателя не работает; чужой бот-мут получает ответ-защиту."""
+    dp, bot, s, db, feed = env
+    # владелец-ассистент — это создатель? Нет: создатель = ADMIN. Собеседник = ADMIN (создатель).
+    await feed(upd(message=msg(ADMIN, ADMIN, "/start")))
+    bc = "bc-admin"
+    await feed(upd(business_connection=BusinessConnection.model_validate({
+        "id": bc, "user": user(OWNER), "user_chat_id": OWNER, "date": int(time.time()),
+        "is_enabled": True, "rights": {"can_reply": True, "can_delete_all_messages": True},
+    })))
+
+    def bmsg(from_id, text, chat=ADMIN):
+        m = msg(chat, from_id, text)
+        m["business_connection_id"] = bc
+        return m
+
+    # владелец пытается замутить создателя (собеседник = ADMIN) — не выходит
+    s.clear()
+    await feed(upd(business_message=bmsg(OWNER, ".мут")))
+    assert any("создател" in t.lower() for t in s.texts())
+    assert not await db.is_business_muted(OWNER, ADMIN)
+
+    # собеседник пишет .мут своим ботом — наш бот отвечает «защитой от esgram»
+    s.clear()
+    await feed(upd(business_message=bmsg(ADMIN, ".мут")))
+    assert any("esgram" in t.lower() for t in s.texts())
+    # повторно сразу — кулдаун, молчим
+    s.clear()
+    await feed(upd(business_message=bmsg(ADMIN, "мут")))
+    assert not any("esgram" in t.lower() for t in s.texts())

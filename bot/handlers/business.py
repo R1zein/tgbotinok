@@ -24,6 +24,7 @@ from aiogram.types import (
     Message,
 )
 
+from ..config import Config
 from ..db import Database
 from ..services.notifier import safe_send
 from ..services.textstyles import OFF_WORDS, STYLE_ALIASES, STYLES, render
@@ -57,6 +58,34 @@ _self_deleted: dict[tuple[str, int, int], float] = {}
 # Ключ — (id автора, текст); ID сообщений у двух сторон личного чата разные, поэтому сверяем текст.
 _bot_edits: dict[tuple[int, str], float] = {}
 _bc_owner: dict[str, int] = {}  # id подключения -> владелец
+
+# Пункт 2: распознаём попытку собеседника замутить владельца командой чужого бота
+RIVAL_MUTE = {"мут", "mute", "мьют", "замутить", "заглушить"}
+RIVAL_NAME = "esgram"
+_rival_cooldown: dict[int, float] = {}
+RIVAL_COOLDOWN = 30
+
+
+def is_rival_mute(text: str | None) -> bool:
+    if not text:
+        return False
+    word = text.strip().split(maxsplit=1)[0].lstrip("./!").lower()
+    word = word.split("@", 1)[0]
+    return word in RIVAL_MUTE
+
+
+async def rival_guard(bot: Bot, bc_id: str, chat_id: int) -> None:
+    now = time.time()
+    if now - _rival_cooldown.get(chat_id, 0) < RIVAL_COOLDOWN:
+        return
+    _rival_cooldown[chat_id] = now
+    try:
+        await bot.send_message(
+            chat_id, f"🛡 Не сработает — у меня защита от {RIVAL_NAME}.",
+            business_connection_id=bc_id,
+        )
+    except TelegramBadRequest as e:
+        log.info("rival_guard: %s", e)
 BOT_EDIT_TTL = 600
 
 
@@ -211,7 +240,7 @@ async def on_connection(conn: BusinessConnection, bot: Bot, db: Database):
     await safe_send(bot, conn.user_chat_id, text)
 
 @router.business_message()
-async def on_business_message(message: Message, bot: Bot, db: Database):
+async def on_business_message(message: Message, bot: Bot, db: Database, config: Config):
     if not db.feature_enabled("business"):
         return
     bc_id = message.business_connection_id
@@ -226,6 +255,9 @@ async def on_business_message(message: Message, bot: Bot, db: Database):
     mode = await db.get_chat_mode(owner_id, message.chat.id)
 
     if not is_owner:
+        # Пункт 2: собеседник пытается командой своего бота замутить владельца — отвечаем «защитой»
+        if is_rival_mute(message.text) and conn["can_reply"]:
+            await rival_guard(bot, bc_id, message.chat.id)
         if settings["biz_mute"] and await db.is_business_muted(owner_id, message.chat.id):
             await delete_business(bot, bc_id, message.chat.id, [message.message_id])
             return
@@ -236,7 +268,7 @@ async def on_business_message(message: Message, bot: Bot, db: Database):
 
     text = (message.text or "").strip()
     if is_owner and text.startswith("."):
-      if await dot_command(message, bot, db, conn, settings, mode, text):
+      if await dot_command(message, bot, db, conn, settings, mode, config, text):
           return
           
     if settings["biz_disappearing"] and message.reply_to_message:
@@ -379,6 +411,7 @@ async def spam(bot: Bot, bc_id: str, chat_id: int, text: str, count: int) -> Non
 
 
 async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: dict, mode: dict,
+                      config: Config,
                       text: str) -> bool:
     parts = text[1:].split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
@@ -415,6 +448,10 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     if cmd in MUTE_CMDS | UNMUTE_CMDS and settings["biz_mute"]:
         await delete_business(bot, bc_id, chat_id, [message.message_id])
         mute = cmd in MUTE_CMDS
+        if mute and chat_id in config.admin_ids:
+            await bot.send_message(chat_id, "😡 Ты серьёзно хотел замутить <b>создателя</b>?",
+                                   business_connection_id=bc_id)
+            return True
         await db.set_business_mute(owner_id, chat_id, bc_id, mute)
         if mute:
             note = "" if conn["can_delete"] else \

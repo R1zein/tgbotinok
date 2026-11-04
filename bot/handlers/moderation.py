@@ -10,6 +10,7 @@ from aiogram.types import (
     Message,
 )
 
+from ..config import Config
 from ..db import Database
 from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
@@ -74,7 +75,34 @@ def split_duration(rest: str) -> tuple[int | None, str]:
     return None, rest
 
 
-async def prepare(message: Message, bot: Bot, db: Database, args: str) -> Target | None:
+CREATOR_PROTECT = 3600  # на сколько мутится тот, кто попытался замутить создателя (по умолч. 1 ч)
+
+
+async def creator_protection(message: Message, bot: Bot, config: Config, target: "Target",
+                             action: str) -> bool:
+    """Защита создателя бота (ADMIN_IDS) от модерации. True — команду надо прервать."""
+    if target.id not in config.admin_ids:
+        return False
+    writer = message.from_user
+    writer_protected = bool(writer and writer.id in config.admin_ids)
+    if action == "mute":
+        await message.reply("😡 Ты серьёзно хотел замутить <b>создателя</b>?")
+        # Тот, кто написал команду, мутится сам (в группе по умолчанию на час)
+        if writer and not writer_protected:
+            try:
+                await do_mute(bot, message.chat.id, writer.id, CREATOR_PROTECT)
+                await message.answer(f"🔇 {mention(writer.id, writer.full_name)} заглушен(а) "
+                                     f"{for_duration(CREATOR_PROTECT)} за покушение на создателя.")
+            except TelegramBadRequest:
+                pass
+    else:
+        who_line = mention(writer.id, writer.full_name) if writer else "Кто-то"
+        await message.reply(f"🛡 {who_line} пытался применить это к <b>создателю</b> — не выйдет.")
+    return True
+
+
+async def prepare(message: Message, bot: Bot, db: Database, config: Config, args: str,
+                  action: str = "") -> Target | None:
     """Общие проверки: функция включена, автор — админ, цель найдена и не админ."""
     if not await db.group_feature(message.chat.id, "moderation"):
         return None
@@ -88,6 +116,10 @@ async def prepare(message: Message, bot: Bot, db: Database, args: str) -> Target
     me = await bot.me()
     if target.id == me.id:
         await message.reply("🙃 Не могу применить это к себе.")
+        return None
+    # Создателя бота тронуть нельзя — проверяем до проверки на админа чата
+    if action in ("mute", "ban", "kick", "warn") and await creator_protection(
+            message, bot, config, target, action):
         return None
     if await is_chat_admin(bot, message.chat.id, target.id):
         await message.reply("⛔ Нельзя применить к администратору.")
@@ -123,8 +155,8 @@ async def do_kick(bot: Bot, chat_id: int, user_id: int) -> None:
 
 
 @router.message(Cmd("mute", "мут", "замутить", "заткнуть"))
-async def cmd_mute(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_mute(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args, "mute")
     if not target:
         return
     secs, reason = split_duration(target.rest)
@@ -139,8 +171,8 @@ async def cmd_mute(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("unmute", "размут", "размутить", "анмут", "анмьют", "unmut"))
-async def cmd_unmute(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_unmute(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args)
     if not target:
         return
     try:
@@ -151,8 +183,8 @@ async def cmd_unmute(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("ban", "бан", "забанить"))
-async def cmd_ban(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_ban(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args, "ban")
     if not target:
         return
     secs, reason = split_duration(target.rest)
@@ -167,8 +199,8 @@ async def cmd_ban(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("unban", "разбан", "разбанить", "анбан"))
-async def cmd_unban(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_unban(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args)
     if not target:
         return
     try:
@@ -179,8 +211,8 @@ async def cmd_unban(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("kick", "кик", "кикнуть"))
-async def cmd_kick(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_kick(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args, "kick")
     if not target:
         return
     try:
@@ -192,8 +224,8 @@ async def cmd_kick(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("warn", "варн", "пред", "предупреждение"))
-async def cmd_warn(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def cmd_warn(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args, "warn")
     if not target:
         return
     settings = await db.get_chat_settings(message.chat.id)
@@ -219,8 +251,8 @@ async def cmd_warn(message: Message, bot: Bot, db: Database, args: str):
                          if count < limit else None)
 
 
-async def _unwarn(message: Message, bot: Bot, db: Database, args: str):
-    target = await prepare(message, bot, db, args)
+async def _unwarn(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    target = await prepare(message, bot, db, config, args)
     if not target:
         return
     count = await db.add_warn(message.chat.id, target.id, -1)
@@ -228,17 +260,17 @@ async def _unwarn(message: Message, bot: Bot, db: Database, args: str):
 
 
 @router.message(Cmd("unwarn", "разварн", "снятьварн", "анварн"))
-async def cmd_unwarn(message: Message, bot: Bot, db: Database, args: str):
-    await _unwarn(message, bot, db, args)
+async def cmd_unwarn(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    await _unwarn(message, bot, db, config, args)
 
 
 @router.message(Cmd("снять"), F.text.lower().regexp(r"^\S+\s+(варн|пред)"))
-async def cmd_unwarn_ru(message: Message, bot: Bot, db: Database, args: str):
-    await _unwarn(message, bot, db, args.split(maxsplit=1)[1] if " " in args else "")
+async def cmd_unwarn_ru(message: Message, bot: Bot, db: Database, config: Config, args: str):
+    await _unwarn(message, bot, db, config, args.split(maxsplit=1)[1] if " " in args else "")
 
 
 @router.message(Cmd("warns", "варны", "преды"))
-async def cmd_warns(message: Message, bot: Bot, db: Database, args: str):
+async def cmd_warns(message: Message, bot: Bot, db: Database, config: Config, args: str):
     if not await db.group_feature(message.chat.id, "moderation"):
         return
     target = await resolve_target(message, bot, db, args)
