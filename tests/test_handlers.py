@@ -386,7 +386,7 @@ async def test_business(env):
     vanish = bmsg(OTHER, None, photo=[{"file_id": "VAN", "file_unique_id": "v", "width": 1, "height": 1}])
     s.clear()
     await feed(upd(business_message=bmsg(OWNER, "ого", reply_to_message=vanish)))
-    assert "SendPhoto" in s.names() and any("Исчезающее" in t for t in s.texts())
+    assert "SendPhoto" in s.names() and any("Сохранено: фото" in t for t in s.texts())
 
     # .мут
     s.clear()
@@ -674,7 +674,7 @@ async def test_reply_to_old_photo_is_not_disappearing(env):
     s.clear()
     await feed(upd(business_message=_bmsg(OTHER, OWNER, "красиво", reply_to_message=old)))
     assert "SendPhoto" not in s.names()
-    assert not any("Исчезающее" in t for t in s.texts())
+    assert not any("Сохранено:" in t for t in s.texts())
 
     # обычное фото, пришедшее при работающем боте, есть в кэше — тоже не «исчезающее»
     normal = _bmsg(OTHER, OTHER, None,

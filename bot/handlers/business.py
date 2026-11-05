@@ -495,13 +495,14 @@ async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> 
     if sent_at < STARTED_AT - 1 or sent_at < (conn["updated_at"] or 0) - 1:
         return
     u = reply.from_user
-    caption = f"🔥 <b>Исчезающее {MEDIA_NAMES[mtype]}</b>\n👤 {who(u.id, u.full_name, u.username)}"
+    # Telegram не сообщает, исчезающее ли медиа, поэтому подпись нейтральная
+    caption = f"💾 <b>Сохранено: {MEDIA_NAMES[mtype]}</b>\n👤 {who(u.id, u.full_name, u.username)}"
     if reply.caption:
         caption += f"\n{quote(reply.caption, 800)}"
     try:
         await send_media(bot, conn["user_chat_id"], mtype, fid, caption)
     except Exception:  # noqa: BLE001
-        log.exception("Не удалось сохранить исчезающее медиа")
+        log.exception("Не удалось сохранить медиа из ответа")
         return
     await cache(db, reply, conn["id"])
 
