@@ -10,6 +10,7 @@ from . import (
     fun,
     gifts,
     group_settings,
+    group_styles,
     moderation,
     rp,
     start,
@@ -35,4 +36,5 @@ def get_routers() -> list[Router]:
         boardgames.router,
         fun.router,
         rp.router,
+        group_styles.router,  # последним: ловит обычный текст участников с режимом
     ]

@@ -748,3 +748,44 @@ async def test_creator_protection_and_rival_business(env):
     s.clear()
     await feed(upd(business_message=bmsg(ADMIN, ".докс")))
     assert any("esgram" in t.lower() and "досье" in t.lower() for t in s.texts())
+
+
+async def test_group_text_styles(env):
+    """В группе .милый включает режим: сообщения автора удаляются и публикуются ботом в стиле."""
+    dp, bot, s, db, feed = env
+    import bot.handlers.group_styles as gs
+    gs._cache.clear()
+    await feed(upd(message=msg(GROUP, USER, "всем привет")))
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, ".милый")))
+    assert (await db.get_chat_mode(USER, GROUP))["style"] == "sweet"
+    assert any("милый-режим включён" in t for t in s.texts())
+
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "спасибо друг")))
+    assert "DeleteMessage" in s.names()
+    sent = [c for c in s.calls if type(c).__name__ == "SendMessage"][-1]
+    assert "tg://user?id=300" in sent.text and "спасибочки" in sent.text.lower()
+
+    # другие участники и команды не трогаются
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, "я без режима")))
+    await feed(upd(message=msg(GROUP, USER, "/help")))
+    assert "DeleteMessage" not in s.names()
+
+    # голое слово «пират» — обычный текст, режим не меняет (только с точкой)
+    await feed(upd(message=msg(GROUP, OTHER, "пират")))
+    assert (await db.get_chat_mode(OTHER, GROUP))["style"] == "none"
+
+    # повтор выключает
+    await feed(upd(message=msg(GROUP, USER, ".милый")))
+    assert (await db.get_chat_mode(USER, GROUP))["style"] == "none"
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "снова обычный")))
+    assert "DeleteMessage" not in s.names()
+
+    # выключено в настройках группы — не работает
+    await db.set_chat_setting(GROUP, "styles", False)
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, ".пират")))
+    assert (await db.get_chat_mode(USER, GROUP))["style"] == "none"

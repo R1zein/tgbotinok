@@ -8,6 +8,7 @@ GLOBAL_FEATURES: dict[str, str] = {
     "games": "🎲 Мини-игры",
     "rp": "🤗 RP-команды и браки",
     "boardgames": "♟ Шахматы и шашки",
+    "styles": "✨ Режимы текста в группах",
     "business": "💬 Ассистент чатов",
     "gifts": "🎁 Отслеживание подарков",
     "usernames": "🔎 Отслеживание юзернеймов",
@@ -22,6 +23,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "games": True,
     "rp": True,
     "boardgames": True,
+    "styles": True,
     "warn_limit": 3,
     "warn_action": "mute",  # mute | kick | ban
 }
@@ -34,6 +36,7 @@ GROUP_TOGGLES: dict[str, str] = {
     "games": "🎲 Мини-игры",
     "rp": "🤗 RP и браки",
     "boardgames": "♟ Шахматы/шашки",
+    "styles": "✨ Режимы текста (.пикми и др.)",
 }
 
 # Личные настройки пользователя (ассистент чатов)
