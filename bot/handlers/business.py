@@ -28,7 +28,6 @@ from ..config import Config
 from ..db import Database
 from ..services.notifier import safe_send
 from ..services.textstyles import OFF_WORDS, STYLE_ALIASES, STYLES, render
-from ..services.userinfo import format_card
 from ..utils.text import mention, quote
 from .boardgames import start_business_game
 
@@ -353,7 +352,6 @@ def commands_text() -> str:
         "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
         "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
         "🪞 <code>.клон</code> — повторять каждое сообщение собеседника (ещё раз — выключить)\n"
-        "ℹ️ <code>.инфа</code> — ID и примерная дата регистрации собеседника (ответ в чат)\n"
         f"🔁 <code>.спам текст 5</code> — отправить текст несколько раз (до {SPAM_MAX})\n"
         "♟ <code>.шахматы</code> — партия в шахматы\n"
         "⚪ <code>.шашки</code> — партия в шашки\n\n"
@@ -366,7 +364,6 @@ def commands_text() -> str:
 
 
 HELP_CMDS = {"команды", "commands", "help", "помощь", "хелп"}
-INFO_CMDS = {"инфа", "инфо", "info", "whois", "id"}
 CLONE_CMDS = {"клон", "clone", "зеркало", "mirror"}
 SPAM_CMDS = {"спам", "spam"}
 SPAM_MAX = 10
@@ -429,9 +426,6 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     if cmd in HELP_CMDS:
         await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
         return True
-    if cmd in INFO_CMDS:
-        await info_command(message, bot, db, conn)
-        return True
     if await style_command(message, bot, db, conn, mode, cmd, arg):
         return True
     if cmd in CLONE_CMDS:
@@ -483,110 +477,6 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         await start_business_game(bot, db, kind, bc_id, chat_id, owner, other)
         return True
     return False
-
-async def info_command(message: Message, bot: Bot, db, conn) -> None:
-    reply = message.reply_to_message
-    
-    # 1. ОПРЕДЕЛЯЕМ ЦЕЛЬ: Если есть реплай — берем автора реплая. Если нет — берем ID текущего бизнес-чата (собеседника)
-    if reply and reply.from_user and not reply.from_user.is_bot:
-        target_id = reply.from_user.id
-    else:
-        target_id = message.chat.id
-
-    # 2. Запрашиваем данные целевого пользователя из таблицы users
-    user_row = await db.fetchone("SELECT id, username, first_name FROM users WHERE id = ?", (target_id,))
-    if user_row:
-        first_name = user_row['first_name']
-        username_str = f"@{user_row['username']}" if user_row['username'] else "—"
-    else:
-        # Если в базе нет, пробуем достать имя из объекта сообщения или чата
-        from_user = reply.from_user if (reply and reply.from_user) else message.from_user
-        first_name = from_user.first_name if from_user else f"Пользователь {target_id}"
-        username_str = "—"
-
-    # 3. Ищем знакомых (Через подарки и общие чаты)
-    gift_ids = set()
-    chat_ids = set()
-
-    try:
-        gift_rows = await db.fetchall(
-            "SELECT to_id AS other FROM gift_edges WHERE from_id = ? UNION SELECT from_id FROM gift_edges WHERE to_id = ?",
-            (target_id, target_id)
-        )
-        gift_ids = {r['other'] for r in gift_rows} if gift_rows else set()
-    except Exception:
-        pass
-
-    try:
-        chat_rows = await db.fetchall(
-            "SELECT DISTINCT cm2.user_id AS other FROM chat_members cm1 JOIN chat_members cm2 ON cm1.chat_id = cm2.chat_id WHERE cm1.user_id = ? AND cm2.user_id != ?",
-            (target_id, target_id)
-        )
-        chat_ids = {r['other'] for r in chat_rows} if chat_rows else set()
-    except Exception:
-        pass
-
-    all_ids = gift_ids | chat_ids
-    acquaintances_lines = []
-
-    if all_ids:
-        try:
-            ph = ",".join("?" * len(all_ids))
-            
-            # УЛУЧШЕННЫЙ ПОИСК ЮЗЕРНЕЙМОВ: Ищем в users
-            user_rows = await db.fetchall(f"SELECT id, username FROM users WHERE id IN ({ph})", tuple(all_ids))
-            unames = {r['id']: r['username'] for r in user_rows} if user_rows else {}
-            
-            # ДОПОЛНИТЕЛЬНЫЙ ПОИСК ЮЗЕРНЕЙМОВ: Если в users пусто, добираем из chat_members
-            missing_ids = [uid for uid in all_ids if not unames.get(uid)]
-            if missing_ids:
-                mph = ",".join("?" * len(missing_ids))
-                chat_user_rows = await db.fetchall(f"SELECT DISTINCT user_id, username FROM chat_members WHERE user_id IN ({mph}) AND username IS NOT NULL", tuple(missing_ids))
-                if chat_user_rows:
-                    for r in chat_user_rows:
-                        unames[r['user_id']] = r['username']
-            
-            acquaintances_lines.append("\n👥 <b>Знакомые:</b>")
-            for uid in all_ids:
-                uname = unames.get(uid)
-                if uname:
-                    acquaintances_lines.append(f"- @{uname} [<code>{uid}</code>]")
-                else:
-                    acquaintances_lines.append(f"- ID: <code>{uid}</code>")
-        except Exception:
-            pass
-    
-    if not acquaintances_lines:
-        acquaintances_lines.append("\n👥 <b>Знакомые:</b> не найдены")
-
-    # 4. Формируем финальную карточку
-    card = (
-        f"ℹ️ <b>Информация о пользователе</b>\n\n"
-        f"👤 <b>Имя:</b> {first_name}\n"
-        f"🔗 <b>Юзернейм:</b> {username_str}\n"
-        f"🆔 <b>ID:</b> <code>{target_id}</code>\n"
-        + "\n".join(acquaintances_lines)
-    )
-    
-    bc_id = conn['id'] if 'id' in conn.keys() else conn['user_id']
-    
-    # 5. Удаляем команду .инфа через проверенный delete_business
-    try:
-        chat_id = message.chat.id
-        await delete_business(bot, bc_id, chat_id, [message.message_id])
-    except Exception:
-        pass
-            
-    # 6. Отправляем карточку
-    try:
-        await bot.send_message(
-            chat_id=message.chat.id,
-            text=card,
-            business_connection_id=bc_id,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        log.info("Не удалось отправить карточку: %s", e)
 
 async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> None:
     reply = message.reply_to_message

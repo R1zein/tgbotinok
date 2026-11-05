@@ -114,11 +114,3 @@ async def test_username_watcher(tmp_path):
     await w.apply("freeone", "taken")
     assert "заняли" in bot.sent[-1][1]
     await db.close()
-
-
-def test_registration_estimate():
-    from bot.services.userinfo import estimate_registration
-    assert estimate_registration(100) is None            # слишком маленький ID
-    assert estimate_registration(200_000_000)[0].endswith("2016")
-    assert estimate_registration(1_000_000_000)[0].endswith("2021")
-    assert estimate_registration(9_000_000_000)[1] is False  # за таблицей — грубая оценка
