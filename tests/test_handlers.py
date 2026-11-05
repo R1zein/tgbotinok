@@ -822,15 +822,17 @@ async def test_resale_menu(env):
     await db.save_gift_attr("PlushPepe", "backdrop", "Black", "1%", 10)
     await feed(upd(message=msg(USER, USER, "/start")))
     m = msg(USER, BOT_ID, "x")
+    await db.save_gift_attr("PlushPepe", "pattern", "Stars", "0.5%", 5)
     for data in ("menu:gifts", "rs:menu", "rs:toggle", "rs:cur", "rs:disc", "rs:cols:0",
-                 "rs:c:PlushPepe:0", "rs:al:m:0", "rs:ac:m:PlushPepe:0", "rs:at:m:PlushPepe:0:0",
+                 "rs:c:PlushPepe:0", "rs:al:p:0", "rs:ac:p:PlushPepe:0", "rs:at:p:PlushPepe:0:0",
                  "rs:bd:0", "rs:bdt:0:0", "rs:menu"):
         await feed(cb(USER, data, m))
     sub = await db.get_resale_sub(USER)
     assert sub["enabled"] == 1 and sub["currency"] == "stars" and sub["discount"] == 30
     assert sub["all_collections"] == 0 and await db.get_resale_collections(USER) == {"PlushPepe"}
-    assert await db.get_user_gift_attrs(USER, "r_model", "PlushPepe") == {"Gold"}
+    assert await db.get_user_gift_attrs(USER, "r_pattern", "PlushPepe") == {"Stars"}
     assert await db.get_user_gift_attrs(USER, "r_backdrop", "*") == {"Black"}
     assert any("Выгодные лоты маркета" in t for t in s.texts())
-    await feed(cb(USER, "rs:ax:m", m))
-    assert await db.count_user_attrs(USER, "r_model") == 0
+    assert not any("Модель (" in t for t in s.texts())
+    await feed(cb(USER, "rs:ax:p", m))
+    assert await db.count_user_attrs(USER, "r_pattern") == 0

@@ -1,4 +1,4 @@
-"""Меню «💸 Выгодные лоты маркета»: валюта, порог скидки, коллекции, модель/фон/узор."""
+"""Меню «💸 Выгодные лоты маркета»: валюта, порог скидки, коллекции, фон и узор."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -10,7 +10,7 @@ from .gifts import _label, _page_rows
 router = Router(name="resale")
 DISCOUNTS = [10, 15, 20, 30, 40, 50]
 CUR_ORDER = ["any", "stars", "ton"]
-KINDS = {"m": ("r_model", "🧸 Модель", "Модели"), "p": ("r_pattern", "🌀 Узор", "Узоры")}
+KINDS = {"p": ("r_pattern", "🌀 Узор", "Узоры")}
 PAGE = 20
 
 
@@ -33,7 +33,7 @@ async def resale_menu(db: Database, userbot: Userbot, user_id: int):
         f"Валюта: <b>{CURRENCY[sub['currency']]}</b>\n"
         f"Дешевле рынка минимум на: <b>{sub['discount']}%</b>\n"
         f"Коллекции: <b>{cols_t}</b>\n"
-        f"🧸 Модель: <b>{fmt(n['m'])}</b> · 🎨 Фон: <b>{fmt(n_bd)}</b> · 🌀 Узор: <b>{fmt(n['p'])}</b>"
+        f"🎨 Фон: <b>{fmt(n_bd)}</b> · 🌀 Узор: <b>{fmt(n['p'])}</b>"
     )
     if not userbot.ready:
         text += f"\n\n⚠️ Источник данных (юзербот) недоступен: {userbot.error or 'не запущен'}"
@@ -44,9 +44,8 @@ async def resale_menu(db: Database, userbot: Userbot, user_id: int):
         [B(f"💱 Валюта: {CURRENCY[sub['currency']]}", "rs:cur"),
          B(f"📉 Скидка от {sub['discount']}%", "rs:disc")],
         [B(f"📚 Коллекции ({cols_t})", "rs:cols:0")],
-        [B(f"🧸 Модель ({fmt(n['m'])})", "rs:al:m:0"),
-         B(f"🎨 Фон ({fmt(n_bd)})", "rs:bd:0")],
-        [B(f"🌀 Узор ({fmt(n['p'])})", "rs:al:p:0")],
+        [B(f"🎨 Фон ({fmt(n_bd)})", "rs:bd:0"),
+         B(f"🌀 Узор ({fmt(n['p'])})", "rs:al:p:0")],
         [B("⬅️ Назад", "menu:gifts")],
     ])
     return text, kb
@@ -173,10 +172,10 @@ async def cb_bd_reset(call: CallbackQuery, db: Database):
     await _show_backdrops(call, db, int(call.data.split(":")[2]))
 
 
-# ---------- модель и узор (свои у каждой коллекции) ----------
+# ---------- узор (свой у каждой коллекции) ----------
 
 async def _items(db: Database, k: str, slug: str):
-    return await (db.list_models(slug) if k == "m" else db.list_patterns(slug))
+    return await db.list_patterns(slug)
 
 
 @router.callback_query(F.data.startswith("rs:al:"))

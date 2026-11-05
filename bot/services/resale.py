@@ -142,8 +142,7 @@ class ResaleWatcher:
             ai = attr_info(attr)
             if ai:
                 await self.db.save_gift_attr(slug, *ai)
-        candidates = await self.db.resale_candidates(slug, info["model"], info["backdrop"],
-                                                     info["pattern"])
+        candidates = await self.db.resale_candidates(slug, None, info["backdrop"], info["pattern"])
         stars, ton, ton_only = listing_price(gift)
         # валюта подписчика: «звёзды» — лот можно купить за звёзды, «TON» — за TON
         candidates = [c for c in candidates

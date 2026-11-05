@@ -198,7 +198,7 @@ async def test_resale_deals(tmp_path):
     await db.set_resale_sub(2, enabled=1, discount=40)              # порог выше — нет
     await db.set_resale_sub(3, enabled=1, currency="ton")           # лот только за звёзды — нет
     await db.set_resale_sub(4, enabled=1, discount=10)
-    await db.toggle_user_gift_attr(4, "r_model", "PlushPepe", "Silver")  # другая модель — нет
+    await db.toggle_user_gift_attr(4, "r_backdrop", "*", "White")  # другой фон — нет
     await w.tick()
     assert bot.sent == []  # первый проход только запоминает текущие лоты
     ub.listings.append(lot(4, 70))  # Gold за 70 при следующем Gold за 100 → дешевле на 30%

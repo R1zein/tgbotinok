@@ -576,7 +576,7 @@ class Database:
 
     async def resale_candidates(self, slug: str, model: str | None, backdrop: str | None,
                                 pattern: str | None) -> list[aiosqlite.Row]:
-        """Подписчики маркета, которым подходит лот по коллекции, модели, фону и узору."""
+        """Подписчики маркета, которым подходит лот по коллекции, фону и узору."""
         def attr(kind: str, attr_slug: str) -> str:
             return (f"(NOT EXISTS (SELECT 1 FROM gift_sub_attrs a WHERE a.user_id=s.user_id "
                     f"AND a.kind='{kind}' AND a.slug=?) OR EXISTS (SELECT 1 FROM gift_sub_attrs a "
@@ -584,16 +584,8 @@ class Database:
         sql = ("SELECT s.user_id, s.currency, s.discount FROM resale_subs s WHERE s.enabled=1 "
                "AND (s.all_collections=1 OR s.user_id IN "
                "(SELECT user_id FROM resale_sub_collections WHERE slug=?)) "
-               f"AND {attr('r_model', slug)} AND {attr('r_backdrop', '*')} "
-               f"AND {attr('r_pattern', slug)}")
-        return await self.fetchall(sql, (slug, slug, slug, model or "", "*", "*", backdrop or "",
-                                         slug, slug, pattern or ""))
-
-    async def list_models(self, slug: str) -> list[aiosqlite.Row]:
-        return await self.fetchall(
-            "SELECT name, rarity, sort_key FROM gift_attrs WHERE kind='model' AND slug=? "
-            "ORDER BY sort_key, name", (slug,)
-        )
+               f"AND {attr('r_backdrop', '*')} AND {attr('r_pattern', slug)}")
+        return await self.fetchall(sql, (slug, "*", "*", backdrop or "", slug, slug, pattern or ""))
 
     async def count_user_attrs(self, user_id: int, kind: str) -> int:
         return await self.scalar(
