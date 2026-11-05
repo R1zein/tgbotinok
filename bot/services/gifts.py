@@ -46,6 +46,42 @@ def _rarity(attr) -> str:
     return "?"
 
 
+# Порядок «от редких к частым» для уровней редкости без процента
+_TIER_KEY = {
+    types.StarGiftAttributeRarityLegendary: 1,
+    types.StarGiftAttributeRarityEpic: 5,
+    types.StarGiftAttributeRarityRare: 20,
+    types.StarGiftAttributeRarityUncommon: 50,
+}
+
+
+def attr_info(attr) -> tuple[str, str, str, int] | None:
+    """(вид 'backdrop'/'pattern', название, редкость, ключ сортировки) или None."""
+    if isinstance(attr, types.StarGiftAttributeBackdrop):
+        kind = "backdrop"
+    elif isinstance(attr, types.StarGiftAttributePattern):
+        kind = "pattern"
+    else:
+        return None
+    r = getattr(attr, "rarity", None)
+    if isinstance(r, types.StarGiftAttributeRarity):
+        key = r.permille
+    else:
+        key = next((v for cls, v in _TIER_KEY.items() if isinstance(r, cls)), 1000)
+    return kind, attr.name, _rarity(attr), key
+
+
+def gift_backdrop_pattern(gift) -> tuple[str | None, str | None]:
+    backdrop = pattern = None
+    for attr in gift.attributes:
+        info = attr_info(attr)
+        if info and info[0] == "backdrop":
+            backdrop = info[1]
+        elif info and info[0] == "pattern":
+            pattern = info[1]
+    return backdrop, pattern
+
+
 def _peer_label(peer, users, chats) -> str | None:
     if isinstance(peer, types.PeerUser):
         for u in users:
@@ -126,6 +162,24 @@ class GiftWatcher:
                 count += 1
         self._last_refresh = time.time()
         log.info("Коллекций подарков: %s", count)
+        await self.load_attributes()
+
+    async def load_attributes(self) -> None:
+        """Загружает возможные фоны и узоры для коллекций, где их ещё нет (для фильтров)."""
+        known = await self.db.slugs_with_attrs()
+        for col in await self.db.list_gift_collections(only_ok=False):
+            if col["slug"] in known or not col["gift_id"]:
+                continue
+            try:
+                res = await self.ub.call(
+                    functions.payments.GetStarGiftUpgradeAttributesRequest(gift_id=col["gift_id"]))
+            except RPCError as e:
+                log.debug("Атрибуты %s: %s", col["slug"], e)
+                continue
+            for attr in getattr(res, "attributes", []):
+                info = attr_info(attr)
+                if info:
+                    await self.db.save_gift_attr(col["slug"], *info)
 
     async def fetch(self, slug: str):
         try:
@@ -184,6 +238,11 @@ class GiftWatcher:
         preview = LinkPreviewOptions(
             is_disabled=False, url=f"https://t.me/nft/{res.gift.slug}", prefer_large_media=True
         )
-        for uid in await self.db.gift_subscribers_for(slug):
+        backdrop, pattern = gift_backdrop_pattern(res.gift)
+        for attr in res.gift.attributes:  # дополняем список вариантов тем, что встретилось
+            info = attr_info(attr)
+            if info:
+                await self.db.save_gift_attr(slug, *info)
+        for uid in await self.db.gift_subscribers_for(slug, backdrop, pattern):
             await safe_send(self.bot, uid, text, link_preview_options=preview)
             await asyncio.sleep(0.05)

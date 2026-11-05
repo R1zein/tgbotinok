@@ -43,6 +43,17 @@ class FakeUB:
                 from telethon.errors import RPCError
                 raise RPCError(None, "STARGIFT_SLUG_INVALID", 400)
             return unique(num, self.issued)
+        if isinstance(req, functions.payments.GetStarGiftUpgradeAttributesRequest):
+            return types.payments.StarGiftUpgradeAttributes(attributes=[
+                types.StarGiftAttributeBackdrop(name=n, backdrop_id=i, center_color=0, edge_color=0,
+                                                pattern_color=0, text_color=0,
+                                                rarity=types.StarGiftAttributeRarity(permille=p))
+                for i, (n, p) in enumerate([("Black", 10), ("White", 25)])
+            ] + [
+                types.StarGiftAttributePattern(name=n, document=types.DocumentEmpty(id=9),
+                                               rarity=types.StarGiftAttributeRarity(permille=p))
+                for n, p in [("Stars", 5), ("Hearts", 12)]
+            ])
         if isinstance(req, functions.account.CheckUsernameRequest):
             if req.username == "onfragment":
                 raise UsernamePurchaseAvailableError(None)
@@ -113,4 +124,24 @@ async def test_username_watcher(tmp_path):
     assert "освободился" in bot.sent[-1][1]
     await w.apply("freeone", "taken")
     assert "заняли" in bot.sent[-1][1]
+    await db.close()
+
+
+async def test_gift_filters_backdrop_pattern(tmp_path):
+    db = Database(str(tmp_path / "f.db"))
+    await db.connect()
+    ub, bot = FakeUB(issued=3), FakeBot()
+    w = GiftWatcher(bot, db, ub, 30)
+    for uid in (1, 2, 3, 4):
+        await db.set_gift_sub(uid, enabled=1, all_collections=1)
+    await db.toggle_user_gift_attr(2, "backdrop", "*", "White")          # фон не совпадёт
+    await db.toggle_user_gift_attr(3, "backdrop", "*", "Black")          # совпадёт
+    await db.toggle_user_gift_attr(4, "pattern", "PlushPepe", "Hearts")  # узор не совпадёт
+    await w.tick()
+    # варианты фонов и узоров загружены и отсортированы от редких к частым
+    assert [r["name"] for r in await db.list_backdrops()] == ["Black", "White"]
+    assert [r["name"] for r in await db.list_patterns("PlushPepe")] == ["Stars", "Hearts"]
+    ub.issued = 4
+    await w.tick()  # подарок #4: фон Black, узор Stars
+    assert sorted(c for c, _ in bot.sent) == [1, 3]
     await db.close()

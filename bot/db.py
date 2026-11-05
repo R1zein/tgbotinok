@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS gift_subs(
 CREATE TABLE IF NOT EXISTS gift_sub_collections(
     user_id INTEGER, slug TEXT, PRIMARY KEY(user_id, slug)
 );
+CREATE TABLE IF NOT EXISTS gift_attrs(
+    slug TEXT, kind TEXT, name TEXT, rarity TEXT, sort_key INTEGER,
+    PRIMARY KEY(slug, kind, name)
+);
+CREATE TABLE IF NOT EXISTS gift_sub_attrs(
+    user_id INTEGER, kind TEXT, slug TEXT, name TEXT,
+    PRIMARY KEY(user_id, kind, slug, name)
+);
 CREATE TABLE IF NOT EXISTS username_watch(
     user_id INTEGER, username TEXT, status TEXT, created_at INTEGER,
     PRIMARY KEY(user_id, username)
@@ -494,13 +502,80 @@ class Database:
             sql += " WHERE status IN ('ok', 'new')"
         return await self.fetchall(sql + " ORDER BY title")
 
-    async def gift_subscribers_for(self, slug: str) -> list[int]:
+    async def gift_subscribers_for(self, slug: str, backdrop: str | None = None,
+                                   pattern: str | None = None) -> list[int]:
+        """Подписчики коллекции с учётом фильтров по фону (общий) и узору (для коллекции)."""
         rows = await self.fetchall(
-            "SELECT user_id FROM gift_subs WHERE enabled=1 AND (all_collections=1 OR user_id IN "
-            "(SELECT user_id FROM gift_sub_collections WHERE slug=?))",
-            (slug,),
+            "SELECT s.user_id FROM gift_subs s WHERE s.enabled=1 AND (s.all_collections=1 OR "
+            "s.user_id IN (SELECT user_id FROM gift_sub_collections WHERE slug=?)) "
+            "AND (NOT EXISTS (SELECT 1 FROM gift_sub_attrs a WHERE a.user_id=s.user_id "
+            "AND a.kind='backdrop') OR EXISTS (SELECT 1 FROM gift_sub_attrs a "
+            "WHERE a.user_id=s.user_id AND a.kind='backdrop' AND a.name=?)) "
+            "AND (NOT EXISTS (SELECT 1 FROM gift_sub_attrs a WHERE a.user_id=s.user_id "
+            "AND a.kind='pattern' AND a.slug=?) OR EXISTS (SELECT 1 FROM gift_sub_attrs a "
+            "WHERE a.user_id=s.user_id AND a.kind='pattern' AND a.slug=? AND a.name=?))",
+            (slug, backdrop or "", slug, slug, pattern or ""),
         )
         return [r["user_id"] for r in rows]
+
+    # ---------- фоны и узоры подарков ----------
+    async def save_gift_attr(self, slug: str, kind: str, name: str, rarity: str,
+                             sort_key: int) -> None:
+        await self.execute(
+            "INSERT INTO gift_attrs(slug, kind, name, rarity, sort_key) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(slug, kind, name) DO UPDATE SET rarity=excluded.rarity, "
+            "sort_key=excluded.sort_key",
+            (slug, kind, name, rarity, sort_key),
+        )
+
+    async def slugs_with_attrs(self) -> set[str]:
+        rows = await self.fetchall("SELECT DISTINCT slug FROM gift_attrs")
+        return {r["slug"] for r in rows}
+
+    async def list_backdrops(self) -> list[aiosqlite.Row]:
+        """Все известные фоны (они общие для коллекций), от редких к частым."""
+        return await self.fetchall(
+            "SELECT name, MIN(sort_key) AS sort_key, MIN(rarity) AS rarity FROM gift_attrs "
+            "WHERE kind='backdrop' GROUP BY name ORDER BY sort_key, name"
+        )
+
+    async def list_patterns(self, slug: str) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT name, rarity, sort_key FROM gift_attrs WHERE kind='pattern' AND slug=? "
+            "ORDER BY sort_key, name", (slug,)
+        )
+
+    async def get_user_gift_attrs(self, user_id: int, kind: str, slug: str = "*") -> set[str]:
+        rows = await self.fetchall(
+            "SELECT name FROM gift_sub_attrs WHERE user_id=? AND kind=? AND slug=?",
+            (user_id, kind, slug),
+        )
+        return {r["name"] for r in rows}
+
+    async def count_user_patterns(self, user_id: int) -> int:
+        return await self.scalar(
+            "SELECT COUNT(*) FROM gift_sub_attrs WHERE user_id=? AND kind='pattern'", (user_id,)
+        ) or 0
+
+    async def toggle_user_gift_attr(self, user_id: int, kind: str, slug: str, name: str) -> None:
+        if name in await self.get_user_gift_attrs(user_id, kind, slug):
+            await self.execute(
+                "DELETE FROM gift_sub_attrs WHERE user_id=? AND kind=? AND slug=? AND name=?",
+                (user_id, kind, slug, name),
+            )
+        else:
+            await self.execute(
+                "INSERT OR IGNORE INTO gift_sub_attrs(user_id, kind, slug, name) VALUES(?,?,?,?)",
+                (user_id, kind, slug, name),
+            )
+
+    async def clear_user_gift_attrs(self, user_id: int, kind: str, slug: str | None = None) -> None:
+        if slug is None:
+            await self.execute("DELETE FROM gift_sub_attrs WHERE user_id=? AND kind=?",
+                               (user_id, kind))
+        else:
+            await self.execute("DELETE FROM gift_sub_attrs WHERE user_id=? AND kind=? AND slug=?",
+                               (user_id, kind, slug))
 
     async def wanted_gift_slugs(self) -> set[str] | None:
         """None — нужны все коллекции; иначе — набор нужных."""

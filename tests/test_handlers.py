@@ -789,3 +789,26 @@ async def test_group_text_styles(env):
     s.clear()
     await feed(upd(message=msg(GROUP, USER, ".пират")))
     assert (await db.get_chat_mode(USER, GROUP))["style"] == "none"
+
+
+async def test_gift_filter_menu(env):
+    dp, bot, s, db, feed = env
+    for slug, title in (("PlushPepe", "Plush Pepe"),):
+        await db.execute("INSERT INTO gift_collections(slug, title, gift_id, status) VALUES(?,?,1,'ok')",
+                         (slug, title))
+    await db.save_gift_attr("PlushPepe", "backdrop", "Black", "1%", 10)
+    await db.save_gift_attr("PlushPepe", "backdrop", "White", "2.5%", 25)
+    await db.save_gift_attr("PlushPepe", "pattern", "Stars", "0.5%", 5)
+    await feed(upd(message=msg(USER, USER, "/start")))
+    m = msg(USER, BOT_ID, "x")
+    for data in ("menu:gifts", "gift:bd:0", "gift:bdt:1:0", "gift:ptl:0",
+                 "gift:ptc:PlushPepe:0", "gift:ptt:PlushPepe:0:0"):
+        await feed(cb(USER, data, m))
+    assert await db.get_user_gift_attrs(USER, "backdrop") == {"White"}
+    assert await db.get_user_gift_attrs(USER, "pattern", "PlushPepe") == {"Stars"}
+    await feed(cb(USER, "menu:gifts", m))
+    assert any("Фон: <b>выбрано 1</b>" in t and "Узор: <b>выбрано 1</b>" in t for t in s.texts())
+    await feed(cb(USER, "gift:bdr:0", m))
+    await feed(cb(USER, "gift:ptx", m))
+    assert not await db.get_user_gift_attrs(USER, "backdrop")
+    assert await db.count_user_patterns(USER) == 0
