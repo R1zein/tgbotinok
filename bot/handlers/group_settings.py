@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from ..db import Database
 from ..features import GROUP_TOGGLES
+from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
 
 router = Router(name="group_settings")
@@ -27,8 +28,17 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=f"При лимите: {WARN_ACTIONS[s['warn_action']]}",
                              callback_data="gs:warn_action"),
     ])
+    if s.get("nicks") and db.feature_enabled("nicks"):
+        rows.append([InlineKeyboardButton(text="🏷 Настроить имена для отметок",
+                                          callback_data="nk:start")])
     rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="gs:close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Cmd("команды", "commands", "помощь"))
+async def cmd_group_commands(message: Message):
+    from .start import GROUP_HELP
+    await message.reply(GROUP_HELP)
 
 
 @router.message(Command("settings"))

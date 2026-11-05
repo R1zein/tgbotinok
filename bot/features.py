@@ -9,6 +9,7 @@ GLOBAL_FEATURES: dict[str, str] = {
     "rp": "🤗 RP-команды и браки",
     "boardgames": "♟ Шахматы и шашки",
     "styles": "✨ Режимы текста в группах",
+    "nicks": "🏷 Автоотметки по именам",
     "business": "💬 Ассистент чатов",
     "gifts": "🎁 Отслеживание подарков",
     "usernames": "🔎 Отслеживание юзернеймов",
@@ -24,6 +25,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "rp": True,
     "boardgames": True,
     "styles": True,
+    "nicks": False,
     "warn_limit": 3,
     "warn_action": "mute",  # mute | kick | ban
 }
@@ -37,6 +39,7 @@ GROUP_TOGGLES: dict[str, str] = {
     "rp": "🤗 RP и браки",
     "boardgames": "♟ Шахматы/шашки",
     "styles": "✨ Режимы текста (.пикми и др.)",
+    "nicks": "🏷 Автоотметки по именам",
 }
 
 # Личные настройки пользователя (ассистент чатов)

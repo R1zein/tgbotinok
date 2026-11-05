@@ -12,6 +12,7 @@ from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandSc
 from .config import load_config
 from .db import Database
 from .handlers import get_routers
+from .handlers.nicks import NickMentionMiddleware
 from .middlewares import TrackMiddleware
 from .services.gifts import GiftWatcher
 from .services.resale import ResaleWatcher
@@ -76,6 +77,7 @@ async def main() -> None:
     track = TrackMiddleware(db, config)
     dp.message.outer_middleware(track)
     dp.callback_query.outer_middleware(track)
+    dp.message.outer_middleware(NickMentionMiddleware())
     dp.include_routers(*get_routers())
 
     tasks = [

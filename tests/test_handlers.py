@@ -146,6 +146,8 @@ async def env(tmp_path, monkeypatch):
     track = TrackMiddleware(db, config)
     dp.message.outer_middleware(track)
     dp.callback_query.outer_middleware(track)
+    from bot.handlers.nicks import NickMentionMiddleware
+    dp.message.outer_middleware(NickMentionMiddleware())
     routers = get_routers()
     dp.include_routers(*routers)
 
@@ -836,3 +838,78 @@ async def test_resale_menu(env):
     assert not any("Модель (" in t for t in s.texts())
     await feed(cb(USER, "rs:ax:p", m))
     assert await db.count_user_attrs(USER, "r_pattern") == 0
+
+
+async def test_group_earning_and_commands(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "работа")))
+    bal = await db.get_balance(GROUP, USER)
+    assert bal > 1000
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "работа")))  # кулдаун час
+    assert await db.get_balance(GROUP, USER) == bal and any("Отдохни" in t for t in s.texts())
+    await feed(upd(message=msg(GROUP, USER, "копать")))
+    assert await db.get_balance(GROUP, USER) > bal
+    # пособие — только если почти ничего не осталось
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "пособие")))
+    assert any("меньше 100" in t for t in s.texts())
+    await db.add_balance(GROUP, USER, -await db.get_balance(GROUP, USER))
+    await feed(upd(message=msg(GROUP, USER, "пособие")))
+    assert await db.get_balance(GROUP, USER) == 300
+    # «команды» без точки — список команд группы
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "команды")))
+    assert any("Команды для группы" in t and "работа" in t for t in s.texts())
+
+
+async def test_group_nicks(env):
+    dp, bot, s, db, feed = env
+    import bot.handlers.nicks as nk
+    nk._cache.clear()
+    nk._last_ping.clear()
+    nk._wizards.clear()
+    pasha = 600
+    NAMES[pasha] = "Pasha"
+    await feed(upd(message=msg(GROUP, pasha, "я паша")))
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.set_chat_setting(GROUP, "nicks", True)
+
+    # админ запускает мастер из /settings
+    s.clear()
+    await feed(cb(ADMIN, "nk:start", msg(GROUP, BOT_ID, "⚙️")))
+    wiz = [c for c in s.calls if type(c).__name__ == "SendMessage"][-1]
+    assert "Как запомнить" in wiz.text
+    w = nk._wizards[GROUP]
+    # листаем до Паши и отвечаем на сообщение мастера
+    while w["queue"][w["idx"]][0] != pasha:
+        await feed(cb(ADMIN, "nk:next", msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])))
+    wiz_msg = msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])
+    await feed(upd(message=msg(GROUP, ADMIN, "паша, павел", reply_to=wiz_msg)))
+    assert {r["alias"] for r in await db.list_nicks(GROUP)} == {"паша", "павел"}
+    await feed(cb(ADMIN, "nk:stop", wiz_msg))
+    assert GROUP not in nk._wizards
+
+    # упоминание в любом падеже — бот отвечает и отмечает Пашу (@pasha)
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "скажите Паше, что мы ждём")))
+    ping = [c for c in s.calls if type(c).__name__ == "SendMessage" and "@pasha" in (c.text or "")]
+    assert ping and ping[-1].reply_parameters is not None
+    # кулдаун: сразу повторно — молчим
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "где Павел?")))
+    assert not any("@pasha" in t for t in s.texts())
+    # сам Паша, пишущий своё имя, себя не отмечает; похожие слова не срабатывают
+    nk._last_ping.clear()
+    s.clear()
+    await feed(upd(message=msg(GROUP, pasha, "паша на связи")))
+    await feed(upd(message=msg(GROUP, USER, "вспахали пашню")))
+    assert not any("@pasha" in t for t in s.texts())
+    # ручное добавление и удаление
+    await feed(upd(message=msg(GROUP, ADMIN, "ник @user юзик")))
+    assert "юзик" in {r["alias"] for r in await db.list_nicks(GROUP)}
+    await feed(upd(message=msg(GROUP, ADMIN, "забыть ник юзик")))
+    assert "юзик" not in {r["alias"] for r in await db.list_nicks(GROUP)}
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ники")))
+    assert any("паша" in t and "павел" in t for t in s.texts())

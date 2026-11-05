@@ -231,3 +231,73 @@ async def cmd_dice(message: Message, db: Database, args: str):
     a, b = mine.dice.value, theirs.dice.value
     text = f"🎲 Вы: <b>{a}</b> — Бот: <b>{b}</b>"
     await settle(message, db, bet, 2 if a > b else 1 if a == b else 0, text)
+
+
+# ---------- заработок ----------
+
+JOBS = [
+    ("🧑‍💻 Написал(а) бота на заказ", 250, 600), ("🚕 Покатал(а) пассажиров в такси", 180, 450),
+    ("🍔 Отработал(а) смену в бургерной", 150, 380), ("📦 Развёз(ла) посылки", 170, 420),
+    ("🎨 Нарисовал(а) аватарку на заказ", 200, 520), ("🧹 Прибрался(-ась) в офисе", 120, 300),
+    ("🎸 Сыграл(а) в переходе", 90, 480), ("📈 Удачно перепродал(а) подарок", 300, 700),
+    ("🐕 Выгулял(а) соседскую собаку", 100, 260), ("🎮 Затащил(а) катку за деньги", 150, 550),
+]
+DIG = [
+    ("🪨 Камни. Просто камни.", 5, 20), ("🥫 Старая банка с мелочью", 20, 60),
+    ("🔩 Металлолом — сдал(а) за копейки", 15, 45), ("🍄 Грибы — продал(а) на рынке", 25, 70),
+]
+DIG_RARE = [("💍 Кольцо! Удачная находка", 300, 800), ("🏺 Древняя монета", 400, 1200)]
+WORK_CD, DIG_CD, AID_CD = 3600, 600, 3 * 3600
+AID_LIMIT, AID_AMOUNT = 100, 300
+
+
+def _left(seconds: int) -> str:
+    if seconds >= 3600:
+        return f"{seconds // 3600} ч {seconds % 3600 // 60} мин"
+    return f"{max(1, seconds // 60)} мин"
+
+
+async def _earn(message: Message, db: Database, action: str, cooldown: int, variants,
+                rare=None, rare_chance: float = 0.0) -> None:
+    if not await enabled(message, db):
+        return
+    chat_id, uid = message.chat.id, message.from_user.id
+    now = int(time.time())
+    left = cooldown - (now - await db.get_cooldown(chat_id, uid, action))
+    if left > 0:
+        return await message.reply(f"⏳ Отдохни, ещё {_left(left)}.")
+    pool = rare if rare and random.random() < rare_chance else variants
+    text, lo, hi = random.choice(pool)
+    amount = random.randint(lo, hi)
+    await db.set_cooldown(chat_id, uid, action, now)
+    balance = await db.add_balance(chat_id, uid, amount)
+    await message.reply(f"{text}\n💰 +{fmt_num(amount)} {CUR} · баланс: {fmt_num(balance)} {CUR}")
+
+
+@router.message(Cmd("работа", "работать", "work", "job"))
+async def cmd_work(message: Message, db: Database):
+    await _earn(message, db, "work", WORK_CD, JOBS)
+
+
+@router.message(Cmd("копать", "клад", "dig", "искать"))
+async def cmd_dig(message: Message, db: Database):
+    await _earn(message, db, "dig", DIG_CD, DIG, DIG_RARE, rare_chance=0.05)
+
+
+@router.message(Cmd("пособие", "aid"))
+async def cmd_aid(message: Message, db: Database):
+    if not await enabled(message, db):
+        return
+    chat_id, uid = message.chat.id, message.from_user.id
+    balance = await db.get_balance(chat_id, uid)
+    if balance >= AID_LIMIT:
+        return await message.reply(f"🙅 Пособие только если на счету меньше {AID_LIMIT} {CUR}. "
+                                   f"Сейчас у тебя {fmt_num(balance)} {CUR}.")
+    now = int(time.time())
+    left = AID_CD - (now - await db.get_cooldown(chat_id, uid, "aid"))
+    if left > 0:
+        return await message.reply(f"⏳ Следующее пособие через {_left(left)}.")
+    await db.set_cooldown(chat_id, uid, "aid", now)
+    balance = await db.add_balance(chat_id, uid, AID_AMOUNT)
+    await message.reply(f"🫴 Держи пособие: +{fmt_num(AID_AMOUNT)} {CUR}. Не проиграй всё сразу 🙂\n"
+                        f"💰 Баланс: {fmt_num(balance)} {CUR}")

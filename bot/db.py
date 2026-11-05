@@ -40,6 +40,14 @@ CREATE TABLE IF NOT EXISTS economy(
     balance INTEGER NOT NULL DEFAULT 0, last_bonus INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(chat_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS cooldowns(
+    chat_id INTEGER, user_id INTEGER, action TEXT, ts INTEGER,
+    PRIMARY KEY(chat_id, user_id, action)
+);
+CREATE TABLE IF NOT EXISTS group_nicks(
+    chat_id INTEGER, user_id INTEGER, alias TEXT,
+    PRIMARY KEY(chat_id, alias)
+);
 CREATE TABLE IF NOT EXISTS marriages(
     chat_id INTEGER, user1 INTEGER, user2 INTEGER, since INTEGER,
     PRIMARY KEY(chat_id, user1, user2)
@@ -329,6 +337,40 @@ class Database:
     async def set_last_bonus(self, chat_id: int, user_id: int, ts: int) -> None:
         await self.execute(
             "UPDATE economy SET last_bonus=? WHERE chat_id=? AND user_id=?", (ts, chat_id, user_id)
+        )
+
+    async def get_cooldown(self, chat_id: int, user_id: int, action: str) -> int:
+        return await self.scalar(
+            "SELECT ts FROM cooldowns WHERE chat_id=? AND user_id=? AND action=?",
+            (chat_id, user_id, action),
+        ) or 0
+
+    async def set_cooldown(self, chat_id: int, user_id: int, action: str, ts: int) -> None:
+        await self.execute(
+            "INSERT INTO cooldowns(chat_id, user_id, action, ts) VALUES(?,?,?,?) "
+            "ON CONFLICT(chat_id, user_id, action) DO UPDATE SET ts=excluded.ts",
+            (chat_id, user_id, action, ts),
+        )
+
+    # ---------- имена для автоотметок ----------
+    async def add_nick(self, chat_id: int, user_id: int, alias: str) -> None:
+        await self.execute(
+            "INSERT INTO group_nicks(chat_id, user_id, alias) VALUES(?,?,?) "
+            "ON CONFLICT(chat_id, alias) DO UPDATE SET user_id=excluded.user_id",
+            (chat_id, user_id, alias),
+        )
+
+    async def remove_nick(self, chat_id: int, alias: str) -> bool:
+        cur = await self.conn.execute("DELETE FROM group_nicks WHERE chat_id=? AND alias=?",
+                                      (chat_id, alias))
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def list_nicks(self, chat_id: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT n.user_id, n.alias, m.first_name, m.username FROM group_nicks n "
+            "LEFT JOIN chat_members m ON m.chat_id=n.chat_id AND m.user_id=n.user_id "
+            "WHERE n.chat_id=? ORDER BY n.user_id, n.alias", (chat_id,)
         )
 
     async def top_balances(self, chat_id: int, limit: int = 10) -> list[aiosqlite.Row]:
