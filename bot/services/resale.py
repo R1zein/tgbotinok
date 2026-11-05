@@ -1,8 +1,8 @@
 """Маркет Telegram: уведомления о выгодных лотах (потенциально ниже рынка).
 
 Каждые N секунд для нужных коллекций берём свежие лоты (payments.getResaleStarGifts).
-Для нового лота «рынок» — следующий по цене лот ТОЙ ЖЕ МОДЕЛИ в той же валюте
-(модель сильнее всего влияет на цену). Если новый лот дешевле него на заданный
+Для нового лота «рынок» — следующий по цене лот с ТОЙ ЖЕ МОДЕЛЬЮ И ТЕМ ЖЕ ФОНОМ в той же
+валюте (узор на цену почти не влияет). Если новый лот дешевле него на заданный
 подписчиком процент — шлём уведомление. Это оценка, а не гарантия выгоды.
 """
 import asyncio
@@ -42,7 +42,8 @@ def listing_price(gift: types.StarGiftUnique) -> tuple[int | None, float | None,
 
 
 def gift_attrs(gift: types.StarGiftUnique) -> dict:
-    out = {"model": None, "backdrop": None, "pattern": None, "model_doc": None, "lines": []}
+    out = {"model": None, "backdrop": None, "pattern": None, "model_doc": None,
+           "backdrop_id": None, "lines": []}
     for attr in gift.attributes:
         info = attr_info(attr)
         if not info:
@@ -53,6 +54,7 @@ def gift_attrs(gift: types.StarGiftUnique) -> dict:
             out["model_doc"] = getattr(attr.document, "id", None)
             out["lines"].append(f"🧸 Модель: {esc(name)} ({_rarity(attr)})")
         elif kind == "backdrop":
+            out["backdrop_id"] = attr.backdrop_id
             out["lines"].append(f"🎨 Фон: {esc(name)} ({_rarity(attr)})")
         else:
             out["lines"].append(f"🌀 Узор: {esc(name)} ({_rarity(attr)})")
@@ -121,10 +123,13 @@ class ResaleWatcher:
         if len(seen) > SEEN_LIMIT:
             self._seen[slug] = set(list(seen)[-SEEN_LIMIT // 2:])
 
-    async def reference_price(self, col, gift, model_doc: int | None,
+    async def reference_price(self, col, gift, model_doc: int | None, backdrop_id: int | None,
                               ton_only: bool) -> tuple[float | None, str]:
-        """Цена следующего по дешевизне лота той же модели (без текущего) и валюта."""
-        attrs = [types.StarGiftAttributeIdModel(document_id=model_doc)] if model_doc else None
+        """Цена следующего по дешевизне лота той же модели и того же фона (без текущего)."""
+        if not model_doc or backdrop_id is None:
+            return None, "stars"  # не с чем сравнивать
+        attrs = [types.StarGiftAttributeIdModel(document_id=model_doc),
+                 types.StarGiftAttributeIdBackdrop(backdrop_id=backdrop_id)]
         others = [g for g in await self._resale(col["gift_id"], 10, sort_by_price=True,
                                                attributes=attrs) if g.num != gift.num]
         prices = []
@@ -151,7 +156,8 @@ class ResaleWatcher:
                       or (c["currency"] == "ton" and ton is not None)]
         if not candidates:
             return
-        ref, unit = await self.reference_price(col, gift, info["model_doc"], ton_only)
+        ref, unit = await self.reference_price(col, gift, info["model_doc"], info["backdrop_id"],
+                                               ton_only)
         price = ton if unit == "ton" else stars
         if not ref or price is None or price >= ref:
             return
@@ -165,7 +171,8 @@ class ResaleWatcher:
             f"<b>{esc(gift.title)} #{gift.num}</b>",
             *info["lines"],
             f"\n💰 Цена: <b>{price_line(stars, ton)}</b>" + (" (только TON)" if ton_only else ""),
-            f"📉 Дешевле следующего лота этой модели на <b>{discount}%</b> ({ref_text})",
+            f"📉 Дешевле следующего лота с той же моделью и фоном на <b>{discount}%</b> "
+            f"({ref_text})",
             f"🔗 https://t.me/nft/{gift.slug}",
         ])
         preview = LinkPreviewOptions(is_disabled=False, url=f"https://t.me/nft/{gift.slug}",

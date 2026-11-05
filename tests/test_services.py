@@ -147,11 +147,11 @@ async def test_gift_filters_backdrop_pattern(tmp_path):
     await db.close()
 
 
-def lot(num, stars=None, ton=None, model="Gold", doc=77, ton_only=False):
+def lot(num, stars=None, ton=None, model="Gold", doc=77, ton_only=False, backdrop="Black", bd_id=1):
     attrs = [
         types.StarGiftAttributeModel(name=model, document=types.DocumentEmpty(id=doc),
                                      rarity=types.StarGiftAttributeRarity(permille=15)),
-        types.StarGiftAttributeBackdrop(name="Black", backdrop_id=1, center_color=0, edge_color=0,
+        types.StarGiftAttributeBackdrop(name=backdrop, backdrop_id=bd_id, center_color=0, edge_color=0,
                                         pattern_color=0, text_color=0,
                                         rarity=types.StarGiftAttributeRarity(permille=10)),
     ]
@@ -175,9 +175,11 @@ class MarketUB:
     async def call(self, req):
         assert isinstance(req, functions.payments.GetResaleStarGiftsRequest)
         items = list(self.listings)
-        if req.attributes:
-            doc = req.attributes[0].document_id
-            items = [g for g in items if g.attributes[0].document.id == doc]
+        for a in req.attributes or []:
+            if isinstance(a, types.StarGiftAttributeIdModel):
+                items = [g for g in items if g.attributes[0].document.id == a.document_id]
+            elif isinstance(a, types.StarGiftAttributeIdBackdrop):
+                items = [g for g in items if g.attributes[1].backdrop_id == a.backdrop_id]
         if req.sort_by_price:
             items.sort(key=lambda g: g.resell_amount[0].amount)
         else:
@@ -198,10 +200,14 @@ async def test_resale_deals(tmp_path):
     await db.set_resale_sub(2, enabled=1, discount=40)              # порог выше — нет
     await db.set_resale_sub(3, enabled=1, currency="ton")           # лот только за звёзды — нет
     await db.set_resale_sub(4, enabled=1, discount=10)
-    await db.toggle_user_gift_attr(4, "r_backdrop", "*", "White")  # другой фон — нет
+    await db.toggle_user_gift_attr(4, "r_backdrop", "*", "Gray")  # фон-фильтр не совпадёт — нет
     await w.tick()
     assert bot.sent == []  # первый проход только запоминает текущие лоты
-    ub.listings.append(lot(4, 70))  # Gold за 70 при следующем Gold за 100 → дешевле на 30%
+    # дешёвый Gold, но на белом фоне — сравнивать не с чем (другие Gold на чёрном), молчим
+    ub.listings.append(lot(6, 10, backdrop="White", bd_id=2))
+    await w.tick()
+    assert bot.sent == []
+    ub.listings.append(lot(4, 70))  # Gold/Black за 70 при следующем Gold/Black за 100 → −30%
     await w.tick()
     assert [c for c, _ in bot.sent] == [1]
     text = bot.sent[0][1]
