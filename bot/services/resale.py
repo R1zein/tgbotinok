@@ -123,13 +123,7 @@ class ResaleWatcher:
         if len(seen) > SEEN_LIMIT:
             self._seen[slug] = set(list(seen)[-SEEN_LIMIT // 2:])
 
-    async def reference_price(self, col, gift, model_doc: int | None, backdrop_id: int | None,
-                              ton_only: bool) -> tuple[float | None, str]:
-        """Цена следующего по дешевизне лота той же модели и того же фона (без текущего)."""
-        if not model_doc or backdrop_id is None:
-            return None, "stars"  # не с чем сравнивать
-        attrs = [types.StarGiftAttributeIdModel(document_id=model_doc),
-                 types.StarGiftAttributeIdBackdrop(backdrop_id=backdrop_id)]
+    async def _cheapest(self, col, gift, attrs, ton_only: bool) -> float | None:
         others = [g for g in await self._resale(col["gift_id"], 10, sort_by_price=True,
                                                attributes=attrs) if g.num != gift.num]
         prices = []
@@ -138,7 +132,23 @@ class ResaleWatcher:
             value = ton if ton_only else stars
             if value is not None:
                 prices.append(value)
-        return (min(prices) if prices else None), ("ton" if ton_only else "stars")
+        return min(prices) if prices else None
+
+    async def reference_price(self, col, gift, model_doc: int | None, backdrop_id: int | None,
+                              ton_only: bool) -> tuple[float | None, str, bool]:
+        """(цена следующего по дешевизне похожего лота, валюта, сравнение_только_по_модели).
+
+        Сначала ищем лоты с той же моделью и тем же фоном; если таких нет — с той же моделью."""
+        unit = "ton" if ton_only else "stars"
+        if not model_doc:
+            return None, unit, False  # не с чем сравнивать
+        model = types.StarGiftAttributeIdModel(document_id=model_doc)
+        if backdrop_id is not None:
+            ref = await self._cheapest(col, gift, [
+                model, types.StarGiftAttributeIdBackdrop(backdrop_id=backdrop_id)], ton_only)
+            if ref is not None:
+                return ref, unit, False
+        return await self._cheapest(col, gift, [model], ton_only), unit, True
 
     async def evaluate(self, col, gift) -> None:
         slug = col["slug"]
@@ -156,8 +166,8 @@ class ResaleWatcher:
                       or (c["currency"] == "ton" and ton is not None)]
         if not candidates:
             return
-        ref, unit = await self.reference_price(col, gift, info["model_doc"], info["backdrop_id"],
-                                               ton_only)
+        ref, unit, model_only = await self.reference_price(
+            col, gift, info["model_doc"], info["backdrop_id"], ton_only)
         price = ton if unit == "ton" else stars
         if not ref or price is None or price >= ref:
             return
@@ -171,6 +181,9 @@ class ResaleWatcher:
             f"<b>{esc(gift.title)} #{gift.num}</b>",
             *info["lines"],
             f"\n💰 Цена: <b>{price_line(stars, ton)}</b>" + (" (только TON)" if ton_only else ""),
+            (f"📉 Дешевле следующего лота этой модели на <b>{discount}%</b> ({ref_text})\n"
+             "<i>(лотов с таким же фоном нет — сравнение только по модели)</i>")
+            if model_only else
             f"📉 Дешевле следующего лота с той же моделью и фоном на <b>{discount}%</b> "
             f"({ref_text})",
             f"🔗 https://t.me/nft/{gift.slug}",
