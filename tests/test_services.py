@@ -145,3 +145,69 @@ async def test_gift_filters_backdrop_pattern(tmp_path):
     await w.tick()  # подарок #4: фон Black, узор Stars
     assert sorted(c for c, _ in bot.sent) == [1, 3]
     await db.close()
+
+
+def lot(num, stars=None, ton=None, model="Gold", doc=77, ton_only=False):
+    attrs = [
+        types.StarGiftAttributeModel(name=model, document=types.DocumentEmpty(id=doc),
+                                     rarity=types.StarGiftAttributeRarity(permille=15)),
+        types.StarGiftAttributeBackdrop(name="Black", backdrop_id=1, center_color=0, edge_color=0,
+                                        pattern_color=0, text_color=0,
+                                        rarity=types.StarGiftAttributeRarity(permille=10)),
+    ]
+    amounts = []
+    if stars is not None:
+        amounts.append(types.StarsAmount(amount=stars, nanos=0))
+    if ton is not None:
+        amounts.append(types.StarsTonAmount(amount=int(ton * 1_000_000_000)))
+    return types.StarGiftUnique(id=num, gift_id=10, title="Plush Pepe", slug=f"PlushPepe-{num}",
+                                num=num, attributes=attrs, availability_issued=100,
+                                availability_total=5000, resell_amount=amounts,
+                                resale_ton_only=ton_only)
+
+
+class MarketUB:
+    ready = True
+
+    def __init__(self):
+        self.listings = [lot(1, 100), lot(2, 120), lot(3, 500, model="Silver", doc=88)]
+
+    async def call(self, req):
+        assert isinstance(req, functions.payments.GetResaleStarGiftsRequest)
+        items = list(self.listings)
+        if req.attributes:
+            doc = req.attributes[0].document_id
+            items = [g for g in items if g.attributes[0].document.id == doc]
+        if req.sort_by_price:
+            items.sort(key=lambda g: g.resell_amount[0].amount)
+        else:
+            items = items[::-1]  # новые первыми
+        return types.payments.ResaleStarGifts(count=len(items), gifts=items[:req.limit],
+                                              chats=[], users=[])
+
+
+async def test_resale_deals(tmp_path):
+    from bot.services.resale import ResaleWatcher
+    db = Database(str(tmp_path / "r.db"))
+    await db.connect()
+    await db.execute("INSERT INTO gift_collections(slug, title, gift_id, status) "
+                     "VALUES('PlushPepe','Plush Pepe',10,'ok')")
+    ub, bot = MarketUB(), FakeBot()
+    w = ResaleWatcher(bot, db, ub, 30)
+    await db.set_resale_sub(1, enabled=1, discount=20)              # получит: скидка 30%
+    await db.set_resale_sub(2, enabled=1, discount=40)              # порог выше — нет
+    await db.set_resale_sub(3, enabled=1, currency="ton")           # лот только за звёзды — нет
+    await db.set_resale_sub(4, enabled=1, discount=10)
+    await db.toggle_user_gift_attr(4, "r_model", "PlushPepe", "Silver")  # другая модель — нет
+    await w.tick()
+    assert bot.sent == []  # первый проход только запоминает текущие лоты
+    ub.listings.append(lot(4, 70))  # Gold за 70 при следующем Gold за 100 → дешевле на 30%
+    await w.tick()
+    assert [c for c, _ in bot.sent] == [1]
+    text = bot.sent[0][1]
+    assert "Plush Pepe #4" in text and "30%" in text and "70 ⭐" in text
+    # дорогой новый лот не присылаем
+    ub.listings.append(lot(5, 300))
+    await w.tick()
+    assert len(bot.sent) == 1
+    await db.close()

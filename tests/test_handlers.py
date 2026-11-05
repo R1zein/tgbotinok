@@ -806,9 +806,31 @@ async def test_gift_filter_menu(env):
         await feed(cb(USER, data, m))
     assert await db.get_user_gift_attrs(USER, "backdrop") == {"White"}
     assert await db.get_user_gift_attrs(USER, "pattern", "PlushPepe") == {"Stars"}
-    await feed(cb(USER, "menu:gifts", m))
+    await feed(cb(USER, "gift:up", m))
     assert any("Фон: <b>выбрано 1</b>" in t and "Узор: <b>выбрано 1</b>" in t for t in s.texts())
     await feed(cb(USER, "gift:bdr:0", m))
     await feed(cb(USER, "gift:ptx", m))
     assert not await db.get_user_gift_attrs(USER, "backdrop")
     assert await db.count_user_patterns(USER) == 0
+
+
+async def test_resale_menu(env):
+    dp, bot, s, db, feed = env
+    await db.execute("INSERT INTO gift_collections(slug, title, gift_id, status) "
+                     "VALUES('PlushPepe','Plush Pepe',1,'ok')")
+    await db.save_gift_attr("PlushPepe", "model", "Gold", "1%", 10)
+    await db.save_gift_attr("PlushPepe", "backdrop", "Black", "1%", 10)
+    await feed(upd(message=msg(USER, USER, "/start")))
+    m = msg(USER, BOT_ID, "x")
+    for data in ("menu:gifts", "rs:menu", "rs:toggle", "rs:cur", "rs:disc", "rs:cols:0",
+                 "rs:c:PlushPepe:0", "rs:al:m:0", "rs:ac:m:PlushPepe:0", "rs:at:m:PlushPepe:0:0",
+                 "rs:bd:0", "rs:bdt:0:0", "rs:menu"):
+        await feed(cb(USER, data, m))
+    sub = await db.get_resale_sub(USER)
+    assert sub["enabled"] == 1 and sub["currency"] == "stars" and sub["discount"] == 30
+    assert sub["all_collections"] == 0 and await db.get_resale_collections(USER) == {"PlushPepe"}
+    assert await db.get_user_gift_attrs(USER, "r_model", "PlushPepe") == {"Gold"}
+    assert await db.get_user_gift_attrs(USER, "r_backdrop", "*") == {"Black"}
+    assert any("Выгодные лоты маркета" in t for t in s.texts())
+    await feed(cb(USER, "rs:ax:m", m))
+    assert await db.count_user_attrs(USER, "r_model") == 0

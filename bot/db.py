@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS gift_attrs(
     slug TEXT, kind TEXT, name TEXT, rarity TEXT, sort_key INTEGER,
     PRIMARY KEY(slug, kind, name)
 );
+CREATE TABLE IF NOT EXISTS resale_subs(
+    user_id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'any',
+    discount INTEGER NOT NULL DEFAULT 20,
+    all_collections INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS resale_sub_collections(
+    user_id INTEGER, slug TEXT, PRIMARY KEY(user_id, slug)
+);
 CREATE TABLE IF NOT EXISTS gift_sub_attrs(
     user_id INTEGER, kind TEXT, slug TEXT, name TEXT,
     PRIMARY KEY(user_id, kind, slug, name)
@@ -518,6 +528,78 @@ class Database:
         )
         return [r["user_id"] for r in rows]
 
+    # ---------- маркет: выгодные лоты ----------
+    async def get_resale_sub(self, user_id: int) -> dict:
+        row = await self.fetchone("SELECT * FROM resale_subs WHERE user_id=?", (user_id,))
+        if not row:
+            return {"user_id": user_id, "enabled": 0, "currency": "any", "discount": 20,
+                    "all_collections": 1}
+        return dict(row)
+
+    async def set_resale_sub(self, user_id: int, **fields: Any) -> None:
+        sub = await self.get_resale_sub(user_id)
+        sub.update(fields)
+        await self.execute(
+            "INSERT INTO resale_subs(user_id, enabled, currency, discount, all_collections) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled, "
+            "currency=excluded.currency, discount=excluded.discount, "
+            "all_collections=excluded.all_collections",
+            (user_id, int(sub["enabled"]), sub["currency"], int(sub["discount"]),
+             int(sub["all_collections"])),
+        )
+
+    async def get_resale_collections(self, user_id: int) -> set[str]:
+        rows = await self.fetchall("SELECT slug FROM resale_sub_collections WHERE user_id=?",
+                                   (user_id,))
+        return {r["slug"] for r in rows}
+
+    async def toggle_resale_collection(self, user_id: int, slug: str) -> None:
+        if slug in await self.get_resale_collections(user_id):
+            await self.execute("DELETE FROM resale_sub_collections WHERE user_id=? AND slug=?",
+                               (user_id, slug))
+        else:
+            await self.execute("INSERT OR IGNORE INTO resale_sub_collections(user_id, slug) "
+                               "VALUES(?,?)", (user_id, slug))
+
+    async def clear_resale_collections(self, user_id: int) -> None:
+        await self.execute("DELETE FROM resale_sub_collections WHERE user_id=?", (user_id,))
+
+    async def resale_wanted_slugs(self) -> set[str] | None:
+        """None — нужны все коллекции; иначе — набор нужных (пустой — никто не подписан)."""
+        if await self.fetchone("SELECT 1 FROM resale_subs WHERE enabled=1 AND all_collections=1"):
+            return None
+        rows = await self.fetchall(
+            "SELECT DISTINCT c.slug FROM resale_sub_collections c "
+            "JOIN resale_subs s ON s.user_id=c.user_id WHERE s.enabled=1"
+        )
+        return {r["slug"] for r in rows}
+
+    async def resale_candidates(self, slug: str, model: str | None, backdrop: str | None,
+                                pattern: str | None) -> list[aiosqlite.Row]:
+        """Подписчики маркета, которым подходит лот по коллекции, модели, фону и узору."""
+        def attr(kind: str, attr_slug: str) -> str:
+            return (f"(NOT EXISTS (SELECT 1 FROM gift_sub_attrs a WHERE a.user_id=s.user_id "
+                    f"AND a.kind='{kind}' AND a.slug=?) OR EXISTS (SELECT 1 FROM gift_sub_attrs a "
+                    f"WHERE a.user_id=s.user_id AND a.kind='{kind}' AND a.slug=? AND a.name=?))")
+        sql = ("SELECT s.user_id, s.currency, s.discount FROM resale_subs s WHERE s.enabled=1 "
+               "AND (s.all_collections=1 OR s.user_id IN "
+               "(SELECT user_id FROM resale_sub_collections WHERE slug=?)) "
+               f"AND {attr('r_model', slug)} AND {attr('r_backdrop', '*')} "
+               f"AND {attr('r_pattern', slug)}")
+        return await self.fetchall(sql, (slug, slug, slug, model or "", "*", "*", backdrop or "",
+                                         slug, slug, pattern or ""))
+
+    async def list_models(self, slug: str) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT name, rarity, sort_key FROM gift_attrs WHERE kind='model' AND slug=? "
+            "ORDER BY sort_key, name", (slug,)
+        )
+
+    async def count_user_attrs(self, user_id: int, kind: str) -> int:
+        return await self.scalar(
+            "SELECT COUNT(*) FROM gift_sub_attrs WHERE user_id=? AND kind=?", (user_id, kind)
+        ) or 0
+
     # ---------- фоны и узоры подарков ----------
     async def save_gift_attr(self, slug: str, kind: str, name: str, rarity: str,
                              sort_key: int) -> None:
@@ -529,7 +611,7 @@ class Database:
         )
 
     async def slugs_with_attrs(self) -> set[str]:
-        rows = await self.fetchall("SELECT DISTINCT slug FROM gift_attrs")
+        rows = await self.fetchall("SELECT DISTINCT slug FROM gift_attrs WHERE kind='model'")
         return {r["slug"] for r in rows}
 
     async def list_backdrops(self) -> list[aiosqlite.Row]:

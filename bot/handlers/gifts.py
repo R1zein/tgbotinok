@@ -34,12 +34,35 @@ async def gifts_menu(db: Database, userbot: Userbot, user_id: int):
         [InlineKeyboardButton(text=f"📚 Коллекции ({cols})", callback_data="gift:cols:0")],
         [InlineKeyboardButton(text=f"🎨 Фон ({bds})", callback_data="gift:bd:0"),
          InlineKeyboardButton(text=f"🌀 Узор ({pts})", callback_data="gift:ptl:0")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:gifts")],
     ])
     return text, kb
 
 
 @router.callback_query(F.data == "menu:gifts")
+async def cb_gifts_hub(call: CallbackQuery, db: Database, userbot: Userbot):
+    if not db.feature_enabled("gifts"):
+        return await call.answer("Функция временно отключена администратором", show_alert=True)
+    up = await db.get_gift_sub(call.from_user.id)
+    rs = await db.get_resale_sub(call.from_user.id)
+    text = ("🎁 <b>Подарки</b>\n\n"
+            "🆕 <b>Новые улучшения</b> — каждый только что улучшенный подарок и кто его улучшил.\n"
+            "💸 <b>Выгодные лоты маркета</b> — лоты на официальном маркете Telegram, которые "
+            "заметно дешевле похожих.")
+    if not userbot.ready:
+        text += f"\n\n⚠️ Источник данных (юзербот) недоступен: {userbot.error or 'не запущен'}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("🔔 " if up["enabled"] else "🔕 ") + "Новые улучшения",
+                              callback_data="gift:up")],
+        [InlineKeyboardButton(text=("🔔 " if rs["enabled"] else "🔕 ") + "Выгодные лоты маркета",
+                              callback_data="rs:menu")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
+    ])
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
+
+
+@router.callback_query(F.data == "gift:up")
 async def cb_gifts(call: CallbackQuery, db: Database, userbot: Userbot):
     if not db.feature_enabled("gifts"):
         return await call.answer("Функция временно отключена администратором", show_alert=True)
@@ -84,7 +107,7 @@ async def collections_kb(db: Database, user_id: int, page: int):
     if page < pages - 1:
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"gift:cols:{page + 1}"))
     rows.append(nav)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:gifts")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gift:up")])
     return InlineKeyboardMarkup(inline_keyboard=rows), len(cols)
 
 
@@ -173,7 +196,7 @@ async def _show_backdrops(call: CallbackQuery, db: Database, page: int):
         "gift:bd:")
     rows.insert(0, [InlineKeyboardButton(text=("✅ " if not chosen else "") + "Любой фон",
                                          callback_data=f"gift:bdr:{page}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:gifts")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gift:up")])
     await call.message.edit_text(
         "🎨 <b>Фильтр по фону</b>\nОтмеченные фоны — присылаю только подарки с ними "
         "(во всех коллекциях). Отсортировано от редких к частым.",
@@ -227,7 +250,7 @@ async def cb_pattern_collections(call: CallbackQuery, db: Database):
             callback_data=f"gift:ptc:{c['slug']}:0"),
         "gift:ptl:")
     rows.append([InlineKeyboardButton(text="🧹 Сбросить все узоры", callback_data="gift:ptx")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:gifts")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="gift:up")])
     await call.message.edit_text(
         "🌀 <b>Фильтр по узору</b>\nУзоры у каждой коллекции свои — выберите коллекцию. "
         "В скобках — сколько узоров отмечено.",

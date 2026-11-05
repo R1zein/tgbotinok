@@ -14,6 +14,7 @@ from .db import Database
 from .handlers import get_routers
 from .middlewares import TrackMiddleware
 from .services.gifts import GiftWatcher
+from .services.resale import ResaleWatcher
 from .services.userbot import Userbot
 from .services.usernames import UsernameWatcher
 
@@ -65,6 +66,7 @@ async def main() -> None:
     username_watcher = UsernameWatcher(bot, db, userbot, config.username_check_delay,
                                        config.username_cycle_interval, config.proxy)
     gift_watcher = GiftWatcher(bot, db, userbot, config.gift_poll_interval)
+    resale_watcher = ResaleWatcher(bot, db, userbot, config.gift_poll_interval)
 
     dp = Dispatcher(storage=MemoryStorage())
     dp["db"] = db
@@ -78,6 +80,7 @@ async def main() -> None:
 
     tasks = [
         asyncio.create_task(gift_watcher.run()),
+        asyncio.create_task(resale_watcher.run()),
         asyncio.create_task(username_watcher.run()),
         asyncio.create_task(cleanup_loop(db, config.business_cache_days)),
     ]

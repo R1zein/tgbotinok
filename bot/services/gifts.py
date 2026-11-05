@@ -56,11 +56,13 @@ _TIER_KEY = {
 
 
 def attr_info(attr) -> tuple[str, str, str, int] | None:
-    """(вид 'backdrop'/'pattern', название, редкость, ключ сортировки) или None."""
+    """(вид 'model'/'backdrop'/'pattern', название, редкость, ключ сортировки) или None."""
     if isinstance(attr, types.StarGiftAttributeBackdrop):
         kind = "backdrop"
     elif isinstance(attr, types.StarGiftAttributePattern):
         kind = "pattern"
+    elif isinstance(attr, types.StarGiftAttributeModel):
+        kind = "model"
     else:
         return None
     r = getattr(attr, "rarity", None)
