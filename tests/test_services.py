@@ -120,10 +120,22 @@ async def test_username_watcher(tmp_path):
     await db.add_username_watch(9, "freeone")
     await w.apply("freeone", "taken")  # unknown -> taken: тихо
     assert bot.sent == []
+    # занят <-> Fragment — одно и то же «недоступен», без уведомлений
+    await w.apply("freeone", "fragment")
+    await w.apply("freeone", "taken")
+    assert bot.sent == []
     await w.apply("freeone", "free")
     assert "освободился" in bot.sent[-1][1]
     await w.apply("freeone", "taken")
     assert "заняли" in bot.sent[-1][1]
+    await w.apply("freeone", "fragment")
+    assert len(bot.sent) == 2
+
+    # дребезг: «недоступен» принимается только после двух одинаковых проверок подряд
+    assert w.confirmed("x1", "fragment") is False
+    assert w.confirmed("x1", "taken") is False   # сменилось — счёт заново
+    assert w.confirmed("x1", "taken") is True
+    assert w.confirmed("x1", "free") is True     # «свободен» — сразу
     await db.close()
 
 

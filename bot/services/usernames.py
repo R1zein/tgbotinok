@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 
 USERNAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{2,30}[a-zA-Z0-9]$")
 MTPROTO_CACHE_TTL = 15 * 60
+# «Недоступные» статусы принимаем, только если они подтвердились столько проверок подряд:
+# t.me и юзербот иногда расходятся, и без этого статус «прыгает» туда-сюда.
+CONFIRMATIONS = 2
+UNAVAILABLE = ("taken", "fragment")
 WEB_TAKEN_RECHECK = 6 * 3600
 
 STATUS_TEXT = {
@@ -56,6 +60,7 @@ class UsernameWatcher:
         self.proxy = proxy
         self.delay, self.cycle = delay, cycle
         self._mt_cache: dict[str, tuple[float, str]] = {}
+        self._pending: dict[str, tuple[str, int]] = {}  # юзернейм -> (новый статус, сколько раз подряд)
         self._session: aiohttp.ClientSession | None = None
 
     async def _http(self) -> aiohttp.ClientSession:
@@ -117,7 +122,7 @@ class UsernameWatcher:
                 if self.db.feature_enabled("usernames"):
                     for username in await self.db.all_watched_usernames():
                         status = await self.check(username)
-                        if status:
+                        if status and self.confirmed(username, status):
                             await self.apply(username, status)
                         await asyncio.sleep(self.delay)
             except asyncio.CancelledError:
@@ -126,28 +131,37 @@ class UsernameWatcher:
                 log.exception("Ошибка в отслеживании юзернеймов")
             await asyncio.sleep(self.cycle)
 
+    def confirmed(self, username: str, status: str) -> bool:
+        """«Свободен» принимаем сразу (важна скорость), остальное — после повторов подряд."""
+        if status == "free":
+            self._pending.pop(username, None)
+            return True
+        prev, count = self._pending.get(username, (None, 0))
+        count = count + 1 if prev == status else 1
+        self._pending[username] = (status, count)
+        return count >= CONFIRMATIONS
+
     async def apply(self, username: str, status: str) -> None:
         for row in await self.db.watchers_of(username):
             old = row["status"]
             if old == status:
                 continue
             await self.db.set_watch_status(row["user_id"], username, status)
-            if old == "unknown" and status != "free":
-                continue
             text = self.change_text(username, old, status)
             if text:
                 await safe_send(self.bot, row["user_id"], text)
 
     @staticmethod
     def change_text(username: str, old: str, new: str) -> str | None:
-        if new == "free":
+        """Уведомляем только о смысловых изменениях: освободился или свободный заняли.
+
+        «Занят» ↔ «на Fragment» — это одно и то же «недоступен», такие смены молча обновляются."""
+        if new == "free" and old != "free":
             return (f"🎉 Юзернейм <b>@{username}</b> освободился!\n"
                     "Скорее займите его: Настройки → Имя пользователя.")
-        if new == "fragment":
-            return (f"💎 Юзернейм <b>@{username}</b> сейчас можно получить только на Fragment:\n"
-                    f"https://fragment.com/username/{username}")
-        if new == "taken" and old in ("free", "fragment"):
+        if old == "free" and new == "fragment":
+            return (f"💎 Юзернейм <b>@{username}</b> больше не свободен — теперь его можно "
+                    f"получить только на Fragment:\nhttps://fragment.com/username/{username}")
+        if old == "free" and new == "taken":
             return f"😔 Юзернейм <b>@{username}</b> заняли."
-        if new == "invalid":
-            return f"⚠️ Юзернейм <b>@{username}</b> недопустим для регистрации."
         return None
