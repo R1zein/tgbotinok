@@ -30,7 +30,7 @@ from .call import collect_members, tag
 router = Router(name="nicks")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
-MENTION_COOLDOWN = 30  # не чаще раза в 30 сек на одного человека в чате
+MENTION_COOLDOWN = 3  # защита от флуда: одного человека не чаще раза в 3 сек
 NICK_CMDS = {"ник", "ники", "забыть", "nick", "nicks"}
 
 _wizards: dict[int, dict] = {}                       # chat_id -> состояние мастера
@@ -70,11 +70,13 @@ def _wizard_text(w: dict, user_aliases: list[str]) -> str:
             f"Уже запомнено: {known}")
 
 
-def _wizard_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def _wizard_kb(aliases: list[str] | None = None) -> InlineKeyboardMarkup:
+    rows = [[B(f"❌ {a}", f"nk:wdel:{i}")] for i, a in enumerate(aliases or [])]
+    rows += [
         [B("➕ Ещё вариант", "nk:more"), B("➡️ Следующий", "nk:next")],
         [B("⏹ Готово", "nk:stop")],
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _user_aliases(db: Database, chat_id: int, uid: int) -> list[str]:
@@ -93,17 +95,18 @@ async def start_wizard(bot: Bot, db: Database, userbot: Userbot, chat_id: int, a
         return
     w = {"admin": admin_id, "queue": queue, "idx": 0, "msg": None}
     _wizards[chat_id] = w
-    msg = await answer(_wizard_text(w, await _user_aliases(db, chat_id, queue[0][0])),
-                       reply_markup=_wizard_kb())
+    first = await _user_aliases(db, chat_id, queue[0][0])
+    msg = await answer(_wizard_text(w, first), reply_markup=_wizard_kb(first))
     w["msg"] = msg.message_id
 
 
 async def _refresh(bot: Bot, db: Database, chat_id: int) -> None:
     w = _wizards[chat_id]
     uid = w["queue"][w["idx"]][0]
+    aliases = await _user_aliases(db, chat_id, uid)
     try:
-        await bot.edit_message_text(_wizard_text(w, await _user_aliases(db, chat_id, uid)),
-                                    chat_id=chat_id, message_id=w["msg"], reply_markup=_wizard_kb())
+        await bot.edit_message_text(_wizard_text(w, aliases), chat_id=chat_id,
+                                    message_id=w["msg"], reply_markup=_wizard_kb(aliases))
     except TelegramBadRequest:
         pass
 
@@ -141,6 +144,23 @@ async def cb_wizard(call: CallbackQuery, bot: Bot, db: Database):
     await call.answer()
 
 
+@router.callback_query(F.data.startswith("nk:wdel:"))
+async def cb_wizard_delete(call: CallbackQuery, bot: Bot, db: Database):
+    chat_id = call.message.chat.id
+    w = _wizards.get(chat_id)
+    if not w or w["msg"] != call.message.message_id:
+        return await call.answer("Мастер уже закрыт", show_alert=True)
+    if call.from_user.id != w["admin"]:
+        return await call.answer("Имена настраивает тот, кто запустил мастер", show_alert=True)
+    aliases = await _user_aliases(db, chat_id, w["queue"][w["idx"]][0])
+    idx = int(call.data.split(":")[2])
+    if idx < len(aliases):
+        await db.remove_nick(chat_id, aliases[idx])
+        _cache.pop(chat_id, None)
+    await _refresh(bot, db, chat_id)
+    await call.answer("Удалено")
+
+
 def _is_wizard_reply(message: Message) -> bool:
     w = _wizards.get(message.chat.id)
     r = message.reply_to_message
@@ -175,12 +195,53 @@ async def cmd_list(message: Message, db: Database):
     by_user: dict[int, list] = {}
     for r in rows:
         by_user.setdefault(r["user_id"], []).append(r)
+    await message.answer(_list_text(by_user), reply_markup=_list_kb(rows))
+
+
+def _list_text(by_user: dict[int, list]) -> str:
     lines = ["🏷 <b>Имена для автоотметок</b>\n"]
     for uid, items in by_user.items():
         first = items[0]
         who = f"@{first['username']}" if first["username"] else mention(uid, first["first_name"])
         lines.append(f"• {who}: " + ", ".join(esc(i["alias"]) for i in items))
-    await message.answer("\n".join(lines))
+    lines.append("\nНажмите на имя ниже, чтобы удалить его (только админы).")
+    return "\n".join(lines)
+
+
+def _list_kb(rows) -> InlineKeyboardMarkup:
+    buttons, row = [], []
+    for i, r in enumerate(rows[:60]):
+        row.append(B(f"❌ {r['alias']}", f"nk:del:{i}"))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("nk:del:"))
+async def cb_list_delete(call: CallbackQuery, bot: Bot, db: Database):
+    chat_id = call.message.chat.id
+    if not await is_chat_admin(bot, chat_id, call.from_user.id):
+        return await call.answer("Удалять имена могут только администраторы", show_alert=True)
+    rows = await db.list_nicks(chat_id)
+    idx = int(call.data.split(":")[2])
+    if idx < len(rows):
+        await db.remove_nick(chat_id, rows[idx]["alias"])
+        _cache.pop(chat_id, None)
+        note = f"Удалено: {rows[idx]['alias']}"
+    else:
+        note = "Список изменился — откройте его заново"
+    rows = await db.list_nicks(chat_id)
+    if not rows:
+        await call.message.edit_text("🏷 Имён больше нет.")
+        return await call.answer(note)
+    by_user: dict[int, list] = {}
+    for r in rows:
+        by_user.setdefault(r["user_id"], []).append(r)
+    await call.message.edit_text(_list_text(by_user), reply_markup=_list_kb(rows))
+    await call.answer(note)
 
 
 @router.message(Cmd("ник", "nick"))

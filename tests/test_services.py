@@ -204,31 +204,35 @@ async def test_resale_deals(tmp_path):
     from bot.services.resale import ResaleWatcher
     db = Database(str(tmp_path / "r.db"))
     await db.connect()
-    await db.execute("INSERT INTO gift_collections(slug, title, gift_id, status) "
-                     "VALUES('PlushPepe','Plush Pepe',10,'ok')")
-    ub, bot = MarketUB(), FakeBot()
-    w = ResaleWatcher(bot, db, ub, 30)
-    await db.set_resale_sub(1, enabled=1, discount=20)              # получит: скидка 30%
-    await db.set_resale_sub(2, enabled=1, discount=40)              # порог выше — нет
-    await db.set_resale_sub(3, enabled=1, currency="ton")           # лот только за звёзды — нет
-    await db.set_resale_sub(4, enabled=1, discount=10)
-    await db.toggle_user_gift_attr(4, "r_backdrop", "*", "Gray")  # фон-фильтр не совпадёт — нет
-    await w.tick()
-    assert bot.sent == []  # первый проход только запоминает текущие лоты
-    ub.listings.append(lot(4, 70))  # Gold/Black за 70 при следующем Gold/Black за 100 → −30%
-    await w.tick()
-    assert [c for c, _ in bot.sent] == [1]
-    text = bot.sent[0][1]
-    assert "Plush Pepe #4" in text and "30%" in text and "70 ⭐" in text
-    assert "той же моделью и фоном" in text
-    # дорогой новый лот не присылаем
-    ub.listings.append(lot(5, 300))
-    await w.tick()
-    assert len(bot.sent) == 1
-    # Gold на белом фоне: других белых нет — сравнение по модели (следующий Gold за 70)
-    ub.listings.append(lot(6, 40, backdrop="White", bd_id=2))
-    await w.tick()
-    # −43%: получают и подписчик с порогом 20%, и с порогом 40%
-    assert sorted(c for c, _ in bot.sent[1:]) == [1, 2]
-    assert all("только по модели" in t for _, t in bot.sent[1:])
-    await db.close()
+    try:
+        await db.execute("INSERT INTO gift_collections(slug, title, gift_id, status) "
+                         "VALUES('PlushPepe','Plush Pepe',10,'ok')")
+        ub, bot = MarketUB(), FakeBot()
+        w = ResaleWatcher(bot, db, ub, 30)
+        await db.set_resale_sub(1, enabled=1, discount=20)              # по модели
+        await db.set_resale_sub(2, enabled=1, discount=40)              # порог выше
+        await db.set_resale_sub(3, enabled=1, currency="ton")           # лоты только за звёзды
+        await db.set_resale_sub(4, enabled=1, discount=10)
+        await db.toggle_user_gift_attr(4, "r_backdrop", "*", "White")   # фильтр по фону
+        await w.tick()
+        assert bot.sent == []  # первый проход только запоминает текущие лоты
+
+        ub.listings.append(lot(4, 70))  # Gold/Black за 70; следующий Gold — 100 → −30%
+        await w.tick()
+        assert [c for c, _ in bot.sent] == [1]
+        assert "#4" in bot.sent[0][1] and "этой модели на <b>30%" in bot.sent[0][1]
+
+        # Silver на белом фоне за 50: по модели следующий Silver — 500 (−90%),
+        # для фильтра по фону белых других нет — подписчику 4 сравнивать не с чем
+        ub.listings.append(lot(7, 50, model="Silver", doc=88, backdrop="White", bd_id=2))
+        await w.tick()
+        assert sorted(c for c, _ in bot.sent[1:]) == [1, 2]
+        # ещё один белый — Gold за 30: подписчик 4 сравнивает по фону (следующий белый — 50)
+        bot.sent.clear()
+        ub.listings.append(lot(8, 30, backdrop="White", bd_id=2))
+        await w.tick()
+        by_user = dict(bot.sent)
+        assert 4 in by_user and "с тем же фоном на <b>40%" in by_user[4]
+        assert "этой модели" in by_user[1]  # Gold: следующий Gold — 70 → −57%
+    finally:
+        await db.close()

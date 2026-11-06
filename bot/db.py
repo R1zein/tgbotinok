@@ -623,7 +623,9 @@ class Database:
             return (f"(NOT EXISTS (SELECT 1 FROM gift_sub_attrs a WHERE a.user_id=s.user_id "
                     f"AND a.kind='{kind}' AND a.slug=?) OR EXISTS (SELECT 1 FROM gift_sub_attrs a "
                     f"WHERE a.user_id=s.user_id AND a.kind='{kind}' AND a.slug=? AND a.name=?))")
-        sql = ("SELECT s.user_id, s.currency, s.discount FROM resale_subs s WHERE s.enabled=1 "
+        sql = ("SELECT s.user_id, s.currency, s.discount, EXISTS(SELECT 1 FROM gift_sub_attrs b "
+               "WHERE b.user_id=s.user_id AND b.kind='r_backdrop') AS by_backdrop "
+               "FROM resale_subs s WHERE s.enabled=1 "
                "AND (s.all_collections=1 OR s.user_id IN "
                "(SELECT user_id FROM resale_sub_collections WHERE slug=?)) "
                f"AND {attr('r_backdrop', '*')} AND {attr('r_pattern', slug)}")

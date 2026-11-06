@@ -913,3 +913,46 @@ async def test_group_nicks(env):
     s.clear()
     await feed(upd(message=msg(GROUP, USER, "ники")))
     assert any("паша" in t and "павел" in t for t in s.texts())
+
+
+async def test_group_nicks_delete_buttons_and_two_aliases(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.nicks as nk
+    nk._cache.clear()
+    nk._last_ping.clear()
+    pasha = 600
+    NAMES[pasha] = "Pasha"
+    await feed(upd(message=msg(GROUP, pasha, "я тут")))
+    await db.set_chat_setting(GROUP, "nicks", True)
+    await db.add_nick(GROUP, pasha, "паша")
+    await db.add_nick(GROUP, pasha, "павел")
+
+    # два разных имени одного человека подряд — оба срабатывают (антифлуд всего 3 сек)
+    clock = [1000.0]
+    monkeypatch.setattr(nk.time, "time", lambda: clock[0])
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "позовите Пашу")))
+    clock[0] += 4
+    await feed(upd(message=msg(GROUP, USER, "Павел, ау")))
+    assert len([t for t in s.texts() if "@pasha" in t]) == 2
+
+    # список с кнопками удаления: не-админ не может, админ — может
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ники")))
+    kb = [c for c in s.calls if type(c).__name__ == "SendMessage"][-1].reply_markup
+    buttons = [b for row in kb.inline_keyboard for b in row]
+    assert [b.text for b in buttons] == ["❌ павел", "❌ паша"]
+    lst = msg(GROUP, BOT_ID, "🏷")
+    await feed(cb(USER, buttons[0].callback_data, lst))
+    assert len(await db.list_nicks(GROUP)) == 2
+    await feed(cb(ADMIN, buttons[0].callback_data, lst))
+    assert [r["alias"] for r in await db.list_nicks(GROUP)] == ["паша"]
+
+    # в мастере у текущего человека тоже есть кнопки удаления
+    nk._wizards.clear()
+    await feed(cb(ADMIN, "nk:start", msg(GROUP, BOT_ID, "⚙️")))
+    w = nk._wizards[GROUP]
+    while w["queue"][w["idx"]][0] != pasha:
+        await feed(cb(ADMIN, "nk:next", msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])))
+    await feed(cb(ADMIN, "nk:wdel:0", msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])))
+    assert await db.list_nicks(GROUP) == []
