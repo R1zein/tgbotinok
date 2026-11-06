@@ -76,6 +76,16 @@ def test_slug_and_format():
     text = format_gift(res.gift, res.users, res.chats)
     assert "Plush Pepe #5" in text and "@durov" in text and "1.5%" in text
     assert "легендарная" in text and "t.me/nft/PlushPepe-5" in text
+    # имя без профиля — показываем имя, а не «скрыт»
+    named = unique(6, 6)
+    named.gift.owner_id = None
+    named.gift.owner_name = "Вася"
+    t2 = format_gift(named.gift, [], [])
+    assert "Вася (без ссылки на профиль)" in t2 and "скрыт" not in t2
+    # Telegram не раскрыл ничего — честно пишем, что скрыт
+    hidden = unique(7, 7)
+    hidden.gift.owner_id = None
+    assert "скрыт владельцем" in format_gift(hidden.gift, [], [])
 
 
 async def test_gift_watcher(tmp_path):

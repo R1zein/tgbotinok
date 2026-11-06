@@ -84,22 +84,41 @@ def gift_backdrop_pattern(gift) -> tuple[str | None, str | None]:
     return backdrop, pattern
 
 
+def _entity_label(entity) -> str | None:
+    if isinstance(entity, types.User):
+        name = " ".join(filter(None, [entity.first_name, entity.last_name])) or str(entity.id)
+        if entity.username:
+            return f"@{entity.username} ({esc(name)})"
+        return f'<a href="tg://user?id={entity.id}">{esc(name)}</a> (без юзернейма)'
+    if isinstance(entity, (types.Channel, types.Chat)):
+        return f"@{entity.username}" if getattr(entity, "username", None) else esc(entity.title)
+    return None
+
+
 def _peer_label(peer, users, chats) -> str | None:
     if isinstance(peer, types.PeerUser):
         for u in users:
             if u.id == peer.user_id:
-                name = " ".join(filter(None, [u.first_name, u.last_name])) or str(u.id)
-                if u.username:
-                    return f"@{u.username} ({esc(name)})"
-                return f'<a href="tg://user?id={u.id}">{esc(name)}</a> (без юзернейма)'
+                return _entity_label(u)
     if isinstance(peer, types.PeerChannel):
         for c in chats:
             if c.id == peer.channel_id:
-                return f"@{c.username}" if getattr(c, "username", None) else esc(c.title)
+                return _entity_label(c)
     return None
 
 
-def format_gift(gift: types.StarGiftUnique, users, chats) -> str:
+def owner_line(gift, users, chats, resolved: str | None = None) -> str:
+    """Подпись владельца из того, что отдал Telegram. Приватность владельца не обходим:
+    если Telegram не раскрыл ни профиль, ни имя — так и пишем, что владелец скрыт."""
+    owner = resolved or (_peer_label(gift.owner_id, users, chats) if gift.owner_id else None)
+    if owner is None and gift.owner_name:
+        owner = f"{esc(gift.owner_name)} (без ссылки на профиль)"
+    if owner is None and gift.owner_address:
+        owner = f"TON-кошелёк <code>{esc(gift.owner_address)}</code>"
+    return owner or "скрыт владельцем (настройки приватности)"
+
+
+def format_gift(gift: types.StarGiftUnique, users, chats, owner: str | None = None) -> str:
     lines = [f"🎁 <b>Новый улучшенный подарок!</b>\n\n<b>{esc(gift.title)} #{gift.num}</b>"]
     for attr in gift.attributes:
         if isinstance(attr, types.StarGiftAttributeModel):
@@ -108,12 +127,7 @@ def format_gift(gift: types.StarGiftUnique, users, chats) -> str:
             lines.append(f"🎨 Фон: {esc(attr.name)} ({_rarity(attr)})")
         elif isinstance(attr, types.StarGiftAttributePattern):
             lines.append(f"🌀 Узор: {esc(attr.name)} ({_rarity(attr)})")
-    owner = _peer_label(gift.owner_id, users, chats) if gift.owner_id else None
-    if owner is None and gift.owner_name:
-        owner = f"{esc(gift.owner_name)} (скрыт)"
-    if owner is None and gift.owner_address:
-        owner = f"TON-кошелёк <code>{esc(gift.owner_address)}</code>"
-    lines.append(f"👤 Улучшил: {owner or 'скрыт'}")
+    lines.append(f"👤 Улучшил: {owner_line(gift, users, chats, owner)}")
     lines.append(f"📊 Выпущено: {gift.availability_issued}/{gift.availability_total}")
     lines.append(f"🔗 https://t.me/nft/{gift.slug}")
     return "\n".join(lines)
@@ -235,8 +249,27 @@ class GiftWatcher:
                 (last, int(time.time()), slug),
             )
 
+    async def resolve_owner(self, res) -> str | None:
+        """Если Telegram дал ID владельца, но не приложил профиль, — запрашиваем его.
+        Telegram сам решает, что показать: скрытый профиль так не раскрыть."""
+        gift = res.gift
+        if not gift.owner_id or _peer_label(gift.owner_id, res.users, res.chats):
+            return None
+        client = getattr(self.ub, "client", None)
+        if client is None:
+            return None
+        try:
+            return _entity_label(await client.get_entity(gift.owner_id))
+        except Exception as e:  # noqa: BLE001
+            log.debug("Владелец %s не получен: %s", gift.slug, e)
+            return None
+
     async def announce(self, slug: str, res) -> None:
-        text = format_gift(res.gift, res.users, res.chats)
+        g = res.gift
+        log.info("Подарок %s: owner_id=%s, owner_name=%s, address=%s", g.slug,
+                 type(g.owner_id).__name__ if g.owner_id else None, bool(g.owner_name),
+                 bool(g.owner_address))
+        text = format_gift(res.gift, res.users, res.chats, await self.resolve_owner(res))
         preview = LinkPreviewOptions(
             is_disabled=False, url=f"https://t.me/nft/{res.gift.slug}", prefer_large_media=True
         )
