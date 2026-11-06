@@ -12,7 +12,9 @@ from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandSc
 from .config import load_config
 from .db import Database
 from .handlers import get_routers
+from .handlers.ai import AIMemoryMiddleware
 from .handlers.nicks import NickMentionMiddleware
+from .services.ai import AIClient
 from .middlewares import TrackMiddleware
 from .services.gifts import GiftWatcher
 from .services.resale import ResaleWatcher
@@ -74,10 +76,13 @@ async def main() -> None:
     dp["config"] = config
     dp["userbot"] = userbot
     dp["username_watcher"] = username_watcher
+    ai_client = AIClient(config)
+    dp["ai"] = ai_client
     track = TrackMiddleware(db, config)
     dp.message.outer_middleware(track)
     dp.callback_query.outer_middleware(track)
     dp.message.outer_middleware(NickMentionMiddleware())
+    dp.message.outer_middleware(AIMemoryMiddleware())
     dp.include_routers(*get_routers())
 
     tasks = [
@@ -97,6 +102,7 @@ async def main() -> None:
                 await t
         await userbot.stop()
         await username_watcher.close()
+        await ai_client.close()
         await db.close()
         await bot.session.close()
 

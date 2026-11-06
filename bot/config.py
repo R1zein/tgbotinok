@@ -29,6 +29,14 @@ class Config:
     max_usernames: int
     business_cache_days: int
     proxy: str | None = None
+    ai_api_key: str | None = None
+    ai_base_url: str = "https://api.deepseek.com"
+    ai_model: str = "deepseek-chat"
+    ai_daily_limit: int = 2000
+
+    @property
+    def ai_configured(self) -> bool:
+        return bool(self.ai_api_key)
 
     @property
     def userbot_configured(self) -> bool:
@@ -58,4 +66,8 @@ def load_config() -> Config:
         max_usernames=_int("MAX_USERNAMES", 10),
         business_cache_days=_int("BUSINESS_CACHE_DAYS", 14),
         proxy=os.getenv("PROXY", "").strip() or None,
+        ai_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
+        ai_base_url=os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com",
+        ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
+        ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
     )

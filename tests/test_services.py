@@ -246,3 +246,62 @@ async def test_resale_deals(tmp_path):
         assert "этой модели" in by_user[1]  # Gold: следующий Gold — 70 → −57%
     finally:
         await db.close()
+
+
+async def test_ai_client_errors(monkeypatch):
+    from bot.config import Config
+    from bot.services.ai import AIClient, AIError
+
+    cfg = Config(bot_token="1:x", admin_ids=frozenset(), db_path=":memory:", api_id=None,
+                 api_hash=None, userbot_session=None, userbot_min_delay=0, gift_poll_interval=30,
+                 username_check_delay=0, username_cycle_interval=60, max_usernames=3,
+                 business_cache_days=1, ai_api_key="sk-test", ai_daily_limit=3)
+
+    class Resp:
+        def __init__(self, status, data):
+            self.status, self._data = status, data
+
+        async def json(self, content_type=None):
+            return self._data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Sess:
+        def __init__(self, status, data):
+            self.status, self.data, self.sent = status, data, None
+            self.closed = False
+
+        def post(self, url, headers, json):
+            self.sent = (url, headers, json)
+            return Resp(self.status, self.data)
+
+    client = AIClient(cfg)
+    ok = Sess(200, {"choices": [{"message": {"content": " Привет "}}]})
+
+    async def http_ok():
+        return ok
+    monkeypatch.setattr(client, "_http", http_ok)
+    assert await client.complete([{"role": "user", "content": "hi"}]) == "Привет"
+    url, headers, body = ok.sent
+    assert url == "https://api.deepseek.com/chat/completions"
+    assert headers["Authorization"] == "Bearer sk-test" and body["model"] == "deepseek-chat"
+
+    for status, needle in ((402, "закончились"), (401, "неверный")):
+        async def http_err(st=status):
+            return Sess(st, {"error": "x"})
+        monkeypatch.setattr(client, "_http", http_err)
+        try:
+            await client.complete([])
+            raise AssertionError("ожидалась ошибка")
+        except AIError as e:
+            assert needle in str(e)
+    # дневной лимит (3) исчерпан
+    try:
+        await client.complete([])
+        raise AssertionError("ожидалась ошибка")
+    except AIError as e:
+        assert "лимит" in str(e)

@@ -2,6 +2,7 @@ from aiogram import Router
 
 from . import (
     admin,
+    ai,
     boardgames,
     business,
     call,
@@ -39,6 +40,7 @@ def get_routers() -> list[Router]:
         duel.router,
         boardgames.router,
         fun.router,
+        ai.router,
         rp.router,
         group_styles.router,  # последним: ловит обычный текст участников с режимом
     ]

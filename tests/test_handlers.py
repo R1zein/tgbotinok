@@ -148,6 +148,10 @@ async def env(tmp_path, monkeypatch):
     dp.callback_query.outer_middleware(track)
     from bot.handlers.nicks import NickMentionMiddleware
     dp.message.outer_middleware(NickMentionMiddleware())
+    from bot.handlers.ai import AIMemoryMiddleware
+    from bot.services.ai import AIClient
+    dp.message.outer_middleware(AIMemoryMiddleware())
+    dp["ai"] = AIClient(config)
     routers = get_routers()
     dp.include_routers(*routers)
 
@@ -956,3 +960,68 @@ async def test_group_nicks_delete_buttons_and_two_aliases(env, monkeypatch):
         await feed(cb(ADMIN, "nk:next", msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])))
     await feed(cb(ADMIN, "nk:wdel:0", msg(GROUP, BOT_ID, "🏷", message_id=w["msg"])))
     assert await db.list_nicks(GROUP) == []
+
+
+async def test_group_ai(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    aih.memory._chats.clear()
+    aih._last_ask.clear()
+    ai = dp["ai"]
+    clock = [1000.0]
+    monkeypatch.setattr(aih.time, "time", lambda: clock[0])
+
+    def replies():
+        return [c for c in s.calls if type(c).__name__ == "SendMessage"]
+
+    # выключено — бот молчит
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ии привет")))
+    assert not replies()
+
+    await db.set_chat_setting(GROUP, "ai", True)
+    # ключа нет — понятная ошибка
+    await feed(upd(message=msg(GROUP, USER, "ии привет")))
+    assert "не настроен" in replies()[-1].text
+
+    seen = []
+
+    async def fake_complete(messages):
+        seen.append(messages)
+        return "Привет, я бот 🙂"
+    monkeypatch.setattr(ai, "complete", fake_complete)
+
+    await feed(upd(message=msg(GROUP, OTHER, "сегодня идём в кино")))
+    clock[0] += 10
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "@testbot куда мы идём?")))
+    r = replies()[-1]
+    assert r.text == "Привет, я бот 🙂" and r.parse_mode is None
+    prompt = seen[-1][1]["content"]
+    assert "сегодня идём в кино" in prompt and "куда мы идём?" in prompt
+    assert seen[-1][0]["role"] == "system"
+
+    # антиспам: тот же человек сразу ещё раз — молчим
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ии а ещё?")))
+    assert not replies()
+
+    # ответ на сообщение бота — тоже вопрос ИИ; ответ бота попадает в контекст
+    clock[0] += 10
+    bot_msg = msg(GROUP, BOT_ID, "Привет, я бот 🙂")
+    await feed(upd(message=msg(GROUP, OTHER, "а ты умный?", reply_to=bot_msg)))
+    prompt = seen[-1][1]["content"]
+    assert "в ответ на твоё сообщение" in prompt and "Bot: Привет, я бот" in prompt
+
+    # обычное сообщение без упоминания — не трогаем
+    clock[0] += 10
+    n = len(seen)
+    await feed(upd(message=msg(GROUP, USER, "просто болтаем")))
+    assert len(seen) == n
+
+    # характер ИИ переключается в настройках и уходит в инструкцию
+    await feed(cb(ADMIN, "gs:ai_persona", msg(GROUP, BOT_ID, "⚙️")))
+    assert (await db.get_chat_settings(GROUP))["ai_persona"] == "sassy"
+    clock[0] += 10
+    await feed(upd(message=msg(GROUP, USER, "ии пошути")))
+    assert "дерзост" in seen[-1][0]["content"]

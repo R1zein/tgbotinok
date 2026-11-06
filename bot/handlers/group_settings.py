@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from ..db import Database
 from ..features import GROUP_TOGGLES
+from ..services.ai import PERSONAS
 from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
 
@@ -31,6 +32,10 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
     if s.get("nicks") and db.feature_enabled("nicks"):
         rows.append([InlineKeyboardButton(text="🏷 Настроить имена для отметок",
                                           callback_data="nk:start")])
+    if s.get("ai") and db.feature_enabled("ai"):
+        label = PERSONAS.get(s.get("ai_persona"), PERSONAS["normal"])[0]
+        rows.append([InlineKeyboardButton(text=f"🤖 Характер ИИ: {label}",
+                                          callback_data="gs:ai_persona")])
     rows.append([InlineKeyboardButton(text="✖️ Закрыть", callback_data="gs:close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -62,6 +67,10 @@ async def cb_settings(call: CallbackQuery, bot: Bot, db: Database):
         await db.set_chat_setting(chat_id, key, not s.get(key))
     elif key == "warn_limit":
         await db.set_chat_setting(chat_id, key, s["warn_limit"] + 1 if s["warn_limit"] < 10 else 2)
+    elif key == "ai_persona":
+        order = list(PERSONAS)
+        cur = s.get("ai_persona") if s.get("ai_persona") in PERSONAS else "normal"
+        await db.set_chat_setting(chat_id, key, order[(order.index(cur) + 1) % len(order)])
     elif key == "warn_action":
         order = list(WARN_ACTIONS)
         await db.set_chat_setting(chat_id, key, order[(order.index(s["warn_action"]) + 1) % len(order)])

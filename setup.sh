@@ -48,6 +48,9 @@ echo "чтобы убрать ранее заданный — введите: -"
 ask "Прокси" PROXY
 if [ "$(grep -E '^PROXY=' .env | cut -d= -f2-)" = "-" ]; then set_var PROXY ""; fi
 
+echo "Ключ DeepSeek для ИИ-ответов в группах (необязательно, Enter — пропустить):"
+ask "DEEPSEEK_API_KEY" DEEPSEEK_API_KEY
+
 echo
 echo "=== 3/4 Юзербот (подарки и юзернеймы) ==="
 read -rp "Настроить юзербота сейчас? (y/n): " ub < /dev/tty

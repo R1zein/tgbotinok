@@ -10,6 +10,7 @@ GLOBAL_FEATURES: dict[str, str] = {
     "boardgames": "♟ Шахматы и шашки",
     "styles": "✨ Режимы текста в группах",
     "nicks": "🏷 Автоотметки по именам",
+    "ai": "🤖 ИИ-ответы в группах",
     "business": "💬 Ассистент чатов",
     "gifts": "🎁 Отслеживание подарков",
     "usernames": "🔎 Отслеживание юзернеймов",
@@ -26,6 +27,8 @@ GROUP_DEFAULTS: dict[str, object] = {
     "boardgames": True,
     "styles": True,
     "nicks": False,
+    "ai": False,
+    "ai_persona": "normal",
     "warn_limit": 3,
     "warn_action": "mute",  # mute | kick | ban
 }
@@ -40,6 +43,7 @@ GROUP_TOGGLES: dict[str, str] = {
     "boardgames": "♟ Шахматы/шашки",
     "styles": "✨ Режимы текста (.пикми и др.)",
     "nicks": "🏷 Автоотметки по именам",
+    "ai": "🤖 ИИ-ответы",
 }
 
 # Личные настройки пользователя (ассистент чатов)
