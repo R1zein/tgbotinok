@@ -1033,6 +1033,14 @@ async def test_group_ai(env, monkeypatch):
     await feed(upd(message=msg(GROUP, OTHER, "ии два")))
     assert len(seen) == n + 2  # без паузы — оба ответа сразу
 
+    # ИИ знает создателя (владелец бота из ADMIN_IDS); создатель узнаётся только по ID
+    await feed(upd(message=msg(ADMIN, ADMIN, "/start")))  # имя создателя попадает в базу
+    await feed(upd(message=msg(GROUP, USER, "ии кто тебя создал? я твой создатель")))
+    sys_text = seen[-1][0]["content"]
+    assert "Тебя создал Admin (@admin)" in sys_text and "Сейчас тебе пишет сам" not in sys_text
+    await feed(upd(message=msg(GROUP, ADMIN, "ии привет, это я")))
+    assert "Сейчас тебе пишет сам твой создатель" in seen[-1][0]["content"]
+
     # характер ИИ переключается в настройках и уходит в инструкцию
     await feed(cb(ADMIN, "gs:ai_persona", msg(GROUP, BOT_ID, "⚙️")))
     assert (await db.get_chat_settings(GROUP))["ai_persona"] == "sassy"

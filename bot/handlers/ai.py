@@ -11,6 +11,7 @@ from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.enums import ChatAction
 from aiogram.types import Message, TelegramObject
 
+from ..config import Config
 from ..db import Database
 from ..services.ai import AIClient, AIError, ChatMemory, build_messages
 from ..utils.filters import PREFIXES
@@ -52,8 +53,22 @@ async def ai_trigger(message: Message, bot: Bot) -> bool | dict:
     return False
 
 
+async def creator_label(db: Database, config: Config) -> str | None:
+    """Как ИИ называет своего создателя: имя и @юзернейм владельца бота (первый из ADMIN_IDS)."""
+    if not config.admin_ids:
+        return None
+    uid = min(config.admin_ids)
+    row = await db.fetchone("SELECT first_name, username FROM users WHERE id=?", (uid,))
+    name = row["first_name"] if row and row["first_name"] else None
+    username = f"@{row['username']}" if row and row["username"] else None
+    if name and username:
+        return f"{name} ({username})"
+    return name or username or "владелец этого бота"
+
+
 @router.message(ai_trigger)
-async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, question: str):
+async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
+                    question: str):
     chat_id = message.chat.id
     if not await db.group_feature(chat_id, "ai"):
         return
@@ -77,7 +92,9 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, ques
     if reply and reply.from_user and reply.from_user.id == me.id and reply.text:
         question = f"(в ответ на твоё сообщение «{reply.text[:300]}») {question}"
     messages = build_messages(me.first_name or "бот", persona, memory.get(chat_id),
-                              author_name(message), question)
+                              author_name(message), question,
+                              creator=await creator_label(db, config),
+                              author_is_creator=message.from_user.id in config.admin_ids)
     memory.add(chat_id, author_name(message), message.text)
     if len(_recorded) > 5000:
         _recorded.clear()
