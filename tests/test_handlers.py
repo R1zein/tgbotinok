@@ -966,7 +966,8 @@ async def test_group_ai(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
     aih.memory._chats.clear()
-    aih._last_ask.clear()
+    aih._last_answer.clear()
+    aih._warned.clear()
     ai = dp["ai"]
     clock = [1000.0]
     monkeypatch.setattr(aih.time, "time", lambda: clock[0])
@@ -1001,9 +1002,13 @@ async def test_group_ai(env, monkeypatch):
     assert "сегодня идём в кино" in prompt and "куда мы идём?" in prompt
     assert seen[-1][0]["role"] == "system"
 
-    # антиспам: тот же человек сразу ещё раз — молчим
+    # пауза в чате (по умолчанию 5 сек): один раз подсказываем, дальше молчим
     s.clear()
-    await feed(upd(message=msg(GROUP, USER, "ии а ещё?")))
+    n = len(seen)
+    await feed(upd(message=msg(GROUP, OTHER, "ии а ещё?")))
+    assert "подождите" in replies()[-1].text and len(seen) == n
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ии и ещё?")))
     assert not replies()
 
     # ответ на сообщение бота — тоже вопрос ИИ; ответ бота попадает в контекст
@@ -1018,6 +1023,15 @@ async def test_group_ai(env, monkeypatch):
     n = len(seen)
     await feed(upd(message=msg(GROUP, USER, "просто болтаем")))
     assert len(seen) == n
+
+    # паузу можно настроить: 5 → 10 → … → 60 → 0 (без паузы)
+    for expected in (10, 20, 30, 60, 0):
+        await feed(cb(ADMIN, "gs:ai_cooldown", msg(GROUP, BOT_ID, "⚙️")))
+        assert (await db.get_chat_settings(GROUP))["ai_cooldown"] == expected
+    n = len(seen)
+    await feed(upd(message=msg(GROUP, USER, "ии раз")))
+    await feed(upd(message=msg(GROUP, OTHER, "ии два")))
+    assert len(seen) == n + 2  # без паузы — оба ответа сразу
 
     # характер ИИ переключается в настройках и уходит в инструкцию
     await feed(cb(ADMIN, "gs:ai_persona", msg(GROUP, BOT_ID, "⚙️")))

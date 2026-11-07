@@ -1,4 +1,5 @@
 """ИИ-ответы через API, совместимый с OpenAI (по умолчанию DeepSeek)."""
+import asyncio
 import logging
 import time
 from collections import deque
@@ -19,6 +20,8 @@ PERSONAS = {
 }
 MEMORY = 30          # сколько последних сообщений чата помним для контекста
 MAX_TOKENS = 400     # потолок длины ответа
+ATTEMPTS = 3         # попыток на один вопрос при сбоях сети/сервера
+RETRY_STATUSES = {500, 502, 503, 504}
 
 
 class AIError(Exception):
@@ -67,9 +70,13 @@ class AIClient:
 
     async def _http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            # DeepSeek закрывает простаивающие соединения; держим их открытыми недолго,
+            # иначе первый вопрос после паузы падает на «мёртвом» соединении
+            connector = aiohttp_connector(self.config.proxy) or aiohttp.TCPConnector(
+                keepalive_timeout=10)
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=60),
-                connector=aiohttp_connector(self.config.proxy),
+                timeout=aiohttp.ClientTimeout(total=self.config.ai_timeout, sock_connect=20),
+                connector=connector,
                 trust_env=not self.config.proxy,
             )
         return self._session
@@ -90,19 +97,32 @@ class AIClient:
         if not self.budget_left():
             raise AIError("На сегодня лимит ИИ-ответов исчерпан, попробуйте завтра.")
         self._used += 1
-        session = await self._http()
-        try:
-            async with session.post(
-                f"{self.config.ai_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {self.config.ai_api_key}"},
-                json={"model": self.config.ai_model, "messages": messages,
-                      "max_tokens": MAX_TOKENS, "temperature": 1.0},
-            ) as resp:
-                data = await resp.json(content_type=None)
-                status = resp.status
-        except Exception as e:  # noqa: BLE001
-            log.warning("ИИ: запрос не прошёл: %s", e)
-            raise AIError("ИИ сейчас недоступен, попробуйте позже.") from e
+        status, data = None, None
+        for attempt in range(1, ATTEMPTS + 1):
+            session = await self._http()
+            try:
+                async with session.post(
+                    f"{self.config.ai_base_url.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.config.ai_api_key}"},
+                    json={"model": self.config.ai_model, "messages": messages,
+                          "max_tokens": MAX_TOKENS, "temperature": 1.0},
+                ) as resp:
+                    status = resp.status
+                    data = await resp.json(content_type=None)
+            except Exception as e:  # noqa: BLE001 — сеть, таймаут, не-JSON в ответе
+                status, data = None, None
+                log.warning("ИИ: попытка %s/%s не прошла: %s: %s", attempt, ATTEMPTS,
+                            type(e).__name__, e)
+            else:
+                if status not in RETRY_STATUSES:
+                    break
+                log.warning("ИИ: попытка %s/%s — сервер ответил %s", attempt, ATTEMPTS, status)
+            if attempt < ATTEMPTS:
+                await asyncio.sleep(1.5 * attempt)
+        if status is None:
+            raise AIError("ИИ сейчас недоступен, попробуйте позже.")
+        if status in RETRY_STATUSES:
+            raise AIError("Сервер ИИ перегружен, попробуйте чуть позже.")
         if status == 401:
             raise AIError("Ключ ИИ неверный — администратору бота нужно его проверить.")
         if status == 402:

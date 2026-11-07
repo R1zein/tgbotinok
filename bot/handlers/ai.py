@@ -18,10 +18,11 @@ from ..utils.filters import PREFIXES
 router = Router(name="ai")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
-USER_COOLDOWN = 5  # секунд между вопросами одного человека
+COOLDOWNS = [0, 3, 5, 10, 20, 30, 60]  # варианты паузы между ответами ИИ в чате (сек)
 AI_CMDS = {"ии", "ai", "нейро", "gpt"}
 memory = ChatMemory()
-_last_ask: dict[tuple[int, int], float] = {}
+_last_answer: dict[int, float] = {}       # чат -> когда ИИ начал последний ответ
+_warned: dict[int, float] = {}            # чат -> когда последний раз писали «подождите»
 _recorded: set[tuple[int, int]] = set()  # вопросы, уже записанные в память обработчиком
 
 
@@ -58,12 +59,19 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, ques
         return
     if not question:
         return await message.reply("🤖 Спросите что-нибудь: <code>ии как дела?</code>")
-    key = (chat_id, message.from_user.id)
+    settings = await db.get_chat_settings(chat_id)
+    cooldown = int(settings.get("ai_cooldown", 5))
     now = time.time()
-    if now - _last_ask.get(key, 0) < USER_COOLDOWN:
+    left = cooldown - (now - _last_answer.get(chat_id, 0))
+    if left > 0:
+        # подсказываем один раз за паузу, чтобы не превращать ожидание в спам
+        if _warned.get(chat_id, 0) < _last_answer.get(chat_id, 0):
+            _warned[chat_id] = now
+            await message.reply(f"⏳ ИИ отвечает не чаще раза в {cooldown} сек — "
+                                f"подождите ещё {int(left) + 1} сек.")
         return
-    _last_ask[key] = now
-    persona = (await db.get_chat_settings(chat_id)).get("ai_persona", "normal")
+    _last_answer[chat_id] = now
+    persona = settings.get("ai_persona", "normal")
     me = await bot.me()
     reply = message.reply_to_message
     if reply and reply.from_user and reply.from_user.id == me.id and reply.text:

@@ -33,6 +33,7 @@ class Config:
     ai_base_url: str = "https://api.deepseek.com"
     ai_model: str = "deepseek-chat"
     ai_daily_limit: int = 2000
+    ai_timeout: int = 120
 
     @property
     def ai_configured(self) -> bool:
@@ -70,4 +71,5 @@ def load_config() -> Config:
         ai_base_url=os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com",
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
         ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
+        ai_timeout=_int("AI_TIMEOUT", 120),
     )

@@ -305,3 +305,62 @@ async def test_ai_client_errors(monkeypatch):
         raise AssertionError("ожидалась ошибка")
     except AIError as e:
         assert "лимит" in str(e)
+
+
+async def test_ai_client_retries(monkeypatch):
+    """Обрыв соединения и 503 повторяются; после успеха — ответ, а не «недоступен»."""
+    import aiohttp
+
+    from bot.config import Config
+    from bot.services import ai as ai_mod
+    from bot.services.ai import AIClient, AIError
+
+    async def no_sleep(*_a):
+        return None
+    monkeypatch.setattr(ai_mod.asyncio, "sleep", no_sleep)
+    cfg = Config(bot_token="1:x", admin_ids=frozenset(), db_path=":memory:", api_id=None,
+                 api_hash=None, userbot_session=None, userbot_min_delay=0, gift_poll_interval=30,
+                 username_check_delay=0, username_cycle_interval=60, max_usernames=3,
+                 business_cache_days=1, ai_api_key="sk-test")
+
+    class Resp:
+        def __init__(self, status, data):
+            self.status, self._data = status, data
+
+        async def json(self, content_type=None):
+            return self._data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Flaky:
+        closed = False
+
+        def __init__(self, plan):
+            self.plan, self.calls = list(plan), 0
+
+        def post(self, url, headers, json):
+            self.calls += 1
+            step = self.plan.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return Resp(*step)
+
+    ok = (200, {"choices": [{"message": {"content": "ок"}}]})
+    client = AIClient(cfg)
+    sess = Flaky([aiohttp.ServerDisconnectedError(), (503, {}), ok])
+
+    async def http():
+        return sess
+    monkeypatch.setattr(client, "_http", http)
+    assert await client.complete([]) == "ок" and sess.calls == 3
+
+    sess = Flaky([aiohttp.ServerDisconnectedError()] * 3)
+    try:
+        await client.complete([])
+        raise AssertionError("ожидалась ошибка")
+    except AIError as e:
+        assert "недоступен" in str(e)

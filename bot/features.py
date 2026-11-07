@@ -29,6 +29,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "nicks": False,
     "ai": False,
     "ai_persona": "normal",
+    "ai_cooldown": 5,
     "warn_limit": 3,
     "warn_action": "mute",  # mute | kick | ban
 }
