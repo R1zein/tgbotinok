@@ -152,6 +152,8 @@ async def env(tmp_path, monkeypatch):
     from bot.services.ai import AIClient
     dp.message.outer_middleware(AIMemoryMiddleware())
     dp["ai"] = AIClient(config)
+    from bot.services.stt import Transcriber
+    dp["stt"] = Transcriber(config)
     routers = get_routers()
     dp.include_routers(*routers)
 
@@ -1047,3 +1049,92 @@ async def test_group_ai(env, monkeypatch):
     clock[0] += 10
     await feed(upd(message=msg(GROUP, USER, "ии пошути")))
     assert "дерзост" in seen[-1][0]["content"]
+
+
+def _voice(chat_id, from_id, reply_to=None, **extra):
+    return msg(chat_id, from_id, None, reply_to=reply_to,
+               voice={"file_id": "VOICE", "file_unique_id": "vu", "duration": 4}, **extra)
+
+
+async def test_voice_to_text(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.business as biz
+    import bot.handlers.voice as vh
+    calls = []
+
+    async def fake_fetch(_bot, file_id):
+        calls.append(file_id)
+        return b"ogg"
+
+    async def fake_transcribe(data, name, duration=None):
+        return "привет из голосового"
+    for mod in (vh, biz):
+        monkeypatch.setattr(mod, "fetch_audio", fake_fetch)
+    monkeypatch.setattr(dp["stt"], "transcribe", fake_transcribe)
+
+    def edits():
+        return [c for c in s.calls if type(c).__name__ == "EditMessageText"]
+
+    # группа: «текст» ответом на голосовое
+    voice = _voice(GROUP, USER)
+    await feed(upd(message=voice))
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, "текст", reply_to=voice)))
+    assert "привет из голосового" in edits()[-1].text and calls == ["VOICE"]
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, "текст")))  # без ответа — подсказка
+    assert any("Ответьте этой командой" in t for t in s.texts())
+
+    # личка с ботом: прислать голосовое — сразу расшифровка
+    s.clear()
+    await feed(upd(message=_voice(USER, USER)))
+    assert "привет из голосового" in edits()[-1].text
+
+    # ЛС через ассистента: .текст ответом на голосовое собеседника
+    await _connect_business(feed)
+    bvoice = _voice(OTHER, OTHER)
+    bvoice["business_connection_id"] = BC
+    s.clear()
+    await feed(upd(business_message=_bmsg(OTHER, OWNER, ".текст", reply_to_message=bvoice)))
+    last = edits()[-1]
+    assert "привет из голосового" in last.text and last.business_connection_id == BC
+
+
+async def test_ai_answers_voice(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    aih.memory._chats.clear()
+    aih._last_answer.clear()
+    aih._warned.clear()
+    await db.set_chat_setting(GROUP, "ai", True)
+
+    async def fake_fetch(_bot, file_id):
+        return b"ogg"
+
+    async def fake_transcribe(data, name, duration=None):
+        return "сколько будет два плюс два"
+    seen = []
+
+    async def fake_complete(messages):
+        seen.append(messages)
+        return "Четыре!"
+    monkeypatch.setattr(aih, "fetch_audio", fake_fetch)
+    monkeypatch.setattr(dp["stt"], "transcribe", fake_transcribe)
+    monkeypatch.setattr(dp["ai"], "complete", fake_complete)
+
+    # голосовое в ответ на сообщение бота — ИИ слышит и отвечает
+    bot_msg = msg(GROUP, BOT_ID, "Спрашивайте")
+    s.clear()
+    await feed(upd(message=_voice(GROUP, USER, reply_to=bot_msg)))
+    assert "сколько будет два плюс два" in seen[-1][1]["content"]
+    assert any(t == "Четыре!" for t in s.texts())
+    assert any("[голосовое]" in t for _, t in aih.memory.get(GROUP))
+
+    # обычное голосовое без обращения к боту — ИИ не трогает
+    aih._last_answer.clear()
+    n = len(seen)
+    await feed(upd(message=_voice(GROUP, OTHER)))
+    assert len(seen) == n
+    # голосовое с подписью «ии» — тоже вопрос
+    await feed(upd(message=_voice(GROUP, OTHER, caption="ии")))
+    assert len(seen) == n + 1

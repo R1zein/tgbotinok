@@ -7,6 +7,7 @@
 - команды владельца в чате: .мут / .размут, .шахматы, .шашки.
 """
 import asyncio
+from html import escape
 import html
 import logging
 import re
@@ -27,6 +28,7 @@ from aiogram.types import (
 from ..config import Config
 from ..db import Database
 from ..services.notifier import safe_send
+from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..services.textstyles import OFF_WORDS, STYLE_ALIASES, STYLES, render
 from ..utils.text import mention, quote
 from .boardgames import start_business_game
@@ -246,7 +248,8 @@ async def on_connection(conn: BusinessConnection, bot: Bot, db: Database):
     await safe_send(bot, conn.user_chat_id, text)
 
 @router.business_message()
-async def on_business_message(message: Message, bot: Bot, db: Database, config: Config):
+async def on_business_message(message: Message, bot: Bot, db: Database, config: Config,
+                              stt: Transcriber | None = None):
     if not db.feature_enabled("business"):
         return
     bc_id = message.business_connection_id
@@ -275,7 +278,7 @@ async def on_business_message(message: Message, bot: Bot, db: Database, config: 
 
     text = (message.text or "").strip()
     if is_owner and text.startswith("."):
-      if await dot_command(message, bot, db, conn, settings, mode, config, text):
+      if await dot_command(message, bot, db, conn, settings, mode, config, text, stt=stt):
           return
           
     if settings["biz_disappearing"] and message.reply_to_message:
@@ -352,6 +355,7 @@ def commands_text() -> str:
         "🔇 <code>.мут</code> — заглушить собеседника (его сообщения удаляются)\n"
         "🔊 <code>.размут</code> / <code>.анмут</code> — снять заглушку\n"
         "🪞 <code>.клон</code> — повторять каждое сообщение собеседника (ещё раз — выключить)\n"
+        "🗣 <code>.текст</code> — ответом на голосовое или кружок: расшифровать в текст\n"
         f"🔁 <code>.спам текст 5</code> — отправить текст несколько раз (до {SPAM_MAX})\n"
         "♟ <code>.шахматы</code> — партия в шахматы\n"
         "⚪ <code>.шашки</code> — партия в шашки\n\n"
@@ -364,6 +368,7 @@ def commands_text() -> str:
 
 
 HELP_CMDS = {"команды", "commands", "help", "помощь", "хелп"}
+STT_CMDS = {"текст", "расшифруй", "расшифровка", "text"}
 CLONE_CMDS = {"клон", "clone", "зеркало", "mirror"}
 SPAM_CMDS = {"спам", "spam"}
 SPAM_MAX = 10
@@ -417,7 +422,7 @@ async def spam(bot: Bot, bc_id: str, chat_id: int, text: str, count: int) -> Non
 
 async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: dict, mode: dict,
                       config: Config,
-                      text: str) -> bool:
+                      text: str, stt: Transcriber | None = None) -> bool:
     parts = text[1:].split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
     raw_arg = parts[1].strip() if len(parts) > 1 else ""
@@ -425,6 +430,9 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
     bc_id, chat_id, owner_id = conn["id"], message.chat.id, conn["user_id"]
     if cmd in HELP_CMDS:
         await flash(bot, bc_id, chat_id, message.message_id, commands_text(), seconds=60)
+        return True
+    if cmd in STT_CMDS and stt is not None and db.feature_enabled("stt"):
+        await voice_to_text(message, bot, conn, stt)
         return True
     if await style_command(message, bot, db, conn, mode, cmd, arg):
         return True
@@ -477,6 +485,33 @@ async def dot_command(message: Message, bot: Bot, db: Database, conn, settings: 
         await start_business_game(bot, db, kind, bc_id, chat_id, owner, other)
         return True
     return False
+
+async def voice_to_text(message: Message, bot: Bot, conn, stt: Transcriber) -> None:
+    """.текст ответом на голосовое/кружок: команда превращается в расшифровку (видна обоим)."""
+    bc_id, chat_id = conn["id"], message.chat.id
+
+    async def show(text: str) -> None:
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=message.message_id,
+                                        business_connection_id=bc_id)
+        except TelegramBadRequest as e:
+            log.info(".текст: не удалось показать результат: %s", e)
+
+    media = media_of(message.reply_to_message)
+    if not media:
+        await flash(bot, bc_id, chat_id, message.message_id,
+                    "🗣 Ответьте <code>.текст</code> на голосовое или кружок.")
+        return
+    await show("⏳ Расшифровываю…")
+    file_id, name, duration = media
+    try:
+        text = await stt.transcribe(await fetch_audio(bot, file_id), name, duration)
+        await show(f"🗣 <i>{escape(text[:3900])}</i>" if text else "🤷 Не удалось разобрать речь.")
+    except STTError as e:
+        await show(f"⚠️ {escape(str(e))}")
+    except Exception:  # noqa: BLE001
+        await show("⚠️ Не получилось расшифровать это сообщение.")
+
 
 async def check_disappearing(message: Message, bot: Bot, db: Database, conn) -> None:
     reply = message.reply_to_message

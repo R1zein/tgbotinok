@@ -364,3 +364,87 @@ async def test_ai_client_retries(monkeypatch):
         raise AssertionError("ожидалась ошибка")
     except AIError as e:
         assert "недоступен" in str(e)
+
+
+def test_telegram_voice_formats_decode(tmp_path):
+    """Голосовые Telegram — ogg/opus, кружки — mp4: Whisper должен их читать (без модели)."""
+    import shutil
+    import subprocess
+
+    import pytest
+    if not shutil.which("ffmpeg"):
+        pytest.skip("нет ffmpeg для генерации тестового звука")
+    from faster_whisper import decode_audio
+    for name, args in (("v.ogg", ["-c:a", "libopus"]), ("n.mp4", ["-c:a", "aac"])):
+        path = tmp_path / name
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=2", *args, str(path)], check=True)
+        audio = decode_audio(str(path))
+        assert 30000 < len(audio) < 34000  # 2 сек при 16 кГц
+
+
+async def test_transcriber_backends(monkeypatch):
+    from bot.config import Config
+    from bot.services.stt import STTError, Transcriber
+
+    def cfg(**kw):
+        base = dict(bot_token="1:x", admin_ids=frozenset(), db_path=":memory:", api_id=None,
+                    api_hash=None, userbot_session=None, userbot_min_delay=0,
+                    gift_poll_interval=30, username_check_delay=0, username_cycle_interval=60,
+                    max_usernames=3, business_cache_days=1)
+        base.update(kw)
+        return Config(**base)
+
+    # локальный Whisper: модель подменяем, проверяем склейку сегментов и параметры
+    class Seg:
+        def __init__(self, t):
+            self.text = t
+
+    class FakeModel:
+        def transcribe(self, audio, language, beam_size, vad_filter):
+            self.args = (language, beam_size, vad_filter)
+            return iter([Seg(" Привет, "), Seg(" как  дела? ")]), None
+
+    t = Transcriber(cfg(stt_language="ru"))
+    model = FakeModel()
+    t._model = model
+    assert await t.transcribe(b"ogg", "voice.ogg", 5) == "Привет, как дела?"
+    assert model.args == ("ru", 1, True)
+    try:
+        await t.transcribe(b"ogg", "voice.ogg", 301)
+        raise AssertionError("ожидалась ошибка")
+    except STTError as e:
+        assert "5 мин" in str(e)
+
+    off = Transcriber(cfg(stt_backend="off"))
+    assert not off.enabled
+
+    # API: multipart на /audio/transcriptions
+    api = Transcriber(cfg(stt_backend="api", stt_api_key="k", stt_model="whisper-1"))
+
+    class Resp:
+        status = 200
+
+        async def json(self, content_type=None):
+            return {"text": "текст из api"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Sess:
+        closed = False
+
+        def post(self, url, headers, data):
+            self.url, self.headers = url, headers
+            return Resp()
+    sess = Sess()
+
+    async def http():
+        return sess
+    monkeypatch.setattr(api, "_http", http)
+    assert await api.transcribe(b"ogg", "voice.ogg", 3) == "текст из api"
+    assert sess.url == "https://api.openai.com/v1/audio/transcriptions"
+    assert sess.headers["Authorization"] == "Bearer k"

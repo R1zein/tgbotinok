@@ -19,6 +19,7 @@ from . import (
     start,
     styles,
     usernames,
+    voice,
 )
 
 
@@ -33,6 +34,7 @@ def get_routers() -> list[Router]:
         styles.router,
         business.router,
         group_settings.router,
+        voice.router,
         nicks.router,
         moderation.router,
         call.router,

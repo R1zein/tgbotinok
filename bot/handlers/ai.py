@@ -14,6 +14,7 @@ from aiogram.types import Message, TelegramObject
 from ..config import Config
 from ..db import Database
 from ..services.ai import AIClient, AIError, ChatMemory, build_messages
+from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 
 router = Router(name="ai")
@@ -66,16 +67,10 @@ async def creator_label(db: Database, config: Config) -> str | None:
     return name or username or "владелец этого бота"
 
 
-@router.message(ai_trigger)
-async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
-                    question: str):
+async def _cooldown_ok(message: Message, db: Database) -> bool:
+    """Пауза между ответами ИИ в чате. True — можно отвечать (и пауза запускается)."""
     chat_id = message.chat.id
-    if not await db.group_feature(chat_id, "ai"):
-        return
-    if not question:
-        return await message.reply("🤖 Спросите что-нибудь: <code>ии как дела?</code>")
-    settings = await db.get_chat_settings(chat_id)
-    cooldown = int(settings.get("ai_cooldown", 5))
+    cooldown = int((await db.get_chat_settings(chat_id)).get("ai_cooldown", 5))
     now = time.time()
     left = cooldown - (now - _last_answer.get(chat_id, 0))
     if left > 0:
@@ -84,9 +79,24 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, conf
             _warned[chat_id] = now
             await message.reply(f"⏳ ИИ отвечает не чаще раза в {cooldown} сек — "
                                 f"подождите ещё {int(left) + 1} сек.")
-        return
+        return False
     _last_answer[chat_id] = now
-    persona = settings.get("ai_persona", "normal")
+    return True
+
+
+async def _typing(bot: Bot, message: Message) -> None:
+    try:
+        await bot.send_chat_action(message.chat.id, ChatAction.TYPING,
+                                   message_thread_id=message.message_thread_id
+                                   if message.is_topic_message else None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
+                   question: str, memory_text: str) -> None:
+    chat_id = message.chat.id
+    persona = (await db.get_chat_settings(chat_id)).get("ai_persona", "normal")
     me = await bot.me()
     reply = message.reply_to_message
     if reply and reply.from_user and reply.from_user.id == me.id and reply.text:
@@ -95,23 +105,67 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, conf
                               author_name(message), question,
                               creator=await creator_label(db, config),
                               author_is_creator=message.from_user.id in config.admin_ids)
-    memory.add(chat_id, author_name(message), message.text)
+    memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
     _recorded.add((chat_id, message.message_id))
-    try:
-        await bot.send_chat_action(chat_id, ChatAction.TYPING,
-                                   message_thread_id=message.message_thread_id
-                                   if message.is_topic_message else None)
-    except Exception:  # noqa: BLE001
-        pass
+    await _typing(bot, message)
     try:
         answer = await ai.complete(messages)
     except AIError as e:
-        return await message.reply(f"🤖 {e}", parse_mode=None)
+        await message.reply(f"🤖 {e}", parse_mode=None)
+        return
     answer = answer[:3500] or "🤔"
     memory.add(chat_id, me.first_name or "бот", answer)
     await message.reply(answer, parse_mode=None)
+
+
+@router.message(ai_trigger)
+async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
+                    question: str):
+    if not await db.group_feature(message.chat.id, "ai"):
+        return
+    if not question:
+        return await message.reply("🤖 Спросите что-нибудь: <code>ии как дела?</code>")
+    if await _cooldown_ok(message, db):
+        await _respond(message, bot, db, ai, config, question, message.text)
+
+
+async def ai_voice_trigger(message: Message, bot: Bot) -> bool:
+    """Голосовое/кружок в ответ на сообщение бота или с подписью «ии …» / @бот."""
+    if not (message.voice or message.video_note) or not message.from_user \
+            or message.from_user.is_bot:
+        return False
+    me = await bot.me()
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.id == me.id:
+        return True
+    caption = (message.caption or "").lower()
+    word = caption.split(maxsplit=1)[0].lstrip("".join(PREFIXES)) if caption else ""
+    return word in AI_CMDS or bool(me.username and f"@{me.username}".lower() in caption)
+
+
+@router.message(ai_voice_trigger)
+async def ai_voice(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
+                   stt: Transcriber):
+    """ИИ отвечает на голосовые: расшифровка Whisper → вопрос к ИИ."""
+    if not await db.group_feature(message.chat.id, "ai"):
+        return
+    if not stt.enabled or not db.feature_enabled("stt"):
+        return await message.reply("🤖 Голосовые я пока не понимаю — расшифровка не настроена.")
+    if not await _cooldown_ok(message, db):
+        return
+    await _typing(bot, message)
+    file_id, name, duration = media_of(message)
+    try:
+        text = await stt.transcribe(await fetch_audio(bot, file_id), name, duration)
+    except STTError as e:
+        return await message.reply(f"🤖 {e}", parse_mode=None)
+    except Exception:  # noqa: BLE001
+        return await message.reply("🤖 Не получилось расслышать это сообщение.", parse_mode=None)
+    if not text:
+        return await message.reply("🤖 Не разобрал, что сказано 🙉", parse_mode=None)
+    await _respond(message, bot, db, ai, config, text, f"[голосовое] {text}")
 
 
 class AIMemoryMiddleware(BaseMiddleware):

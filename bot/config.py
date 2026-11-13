@@ -34,6 +34,13 @@ class Config:
     ai_model: str = "deepseek-chat"
     ai_daily_limit: int = 2000
     ai_timeout: int = 120
+    stt_backend: str = "local"           # local (Whisper на сервере) | api | off
+    stt_model: str = "base"
+    stt_api_key: str | None = None
+    stt_base_url: str = "https://api.openai.com/v1"
+    stt_language: str | None = None
+    stt_max_seconds: int = 300
+    stt_model_dir: str = "data/whisper"
 
     @property
     def ai_configured(self) -> bool:
@@ -72,4 +79,12 @@ def load_config() -> Config:
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
         ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
         ai_timeout=_int("AI_TIMEOUT", 120),
+        stt_backend=(os.getenv("STT_BACKEND", "").strip().lower() or "local"),
+        stt_model=os.getenv("STT_MODEL", "").strip() or (
+            "whisper-1" if os.getenv("STT_BACKEND", "").strip().lower() == "api" else "base"),
+        stt_api_key=os.getenv("STT_API_KEY", "").strip() or None,
+        stt_base_url=os.getenv("STT_BASE_URL", "").strip() or "https://api.openai.com/v1",
+        stt_language=os.getenv("STT_LANGUAGE", "").strip() or None,
+        stt_max_seconds=_int("STT_MAX_SECONDS", 300),
+        stt_model_dir=os.getenv("STT_MODEL_DIR", "").strip() or "data/whisper",
     )

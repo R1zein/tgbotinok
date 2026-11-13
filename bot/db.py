@@ -241,7 +241,11 @@ class Database:
     async def set_chat_setting(self, chat_id: int, key: str, value: Any) -> dict:
         settings = await self.get_chat_settings(chat_id)
         settings[key] = value
-        await self.execute("UPDATE chats SET settings=? WHERE id=?", (json.dumps(settings), chat_id))
+        await self.execute(
+            "INSERT INTO chats(id, settings, created_at) VALUES(?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET settings=excluded.settings",
+            (chat_id, json.dumps(settings), now()),
+        )
         return settings
 
     async def group_feature(self, chat_id: int, key: str) -> bool:

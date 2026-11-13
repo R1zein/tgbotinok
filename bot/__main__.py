@@ -15,6 +15,7 @@ from .handlers import get_routers
 from .handlers.ai import AIMemoryMiddleware
 from .handlers.nicks import NickMentionMiddleware
 from .services.ai import AIClient
+from .services.stt import Transcriber
 from .middlewares import TrackMiddleware
 from .services.gifts import GiftWatcher
 from .services.resale import ResaleWatcher
@@ -78,6 +79,8 @@ async def main() -> None:
     dp["username_watcher"] = username_watcher
     ai_client = AIClient(config)
     dp["ai"] = ai_client
+    stt = Transcriber(config)
+    dp["stt"] = stt
     track = TrackMiddleware(db, config)
     dp.message.outer_middleware(track)
     dp.callback_query.outer_middleware(track)
@@ -103,6 +106,7 @@ async def main() -> None:
         await userbot.stop()
         await username_watcher.close()
         await ai_client.close()
+        await stt.close()
         await db.close()
         await bot.session.close()
 

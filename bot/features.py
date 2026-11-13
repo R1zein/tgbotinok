@@ -11,6 +11,7 @@ GLOBAL_FEATURES: dict[str, str] = {
     "styles": "✨ Режимы текста в группах",
     "nicks": "🏷 Автоотметки по именам",
     "ai": "🤖 ИИ-ответы в группах",
+    "stt": "🗣 Расшифровка голосовых",
     "business": "💬 Ассистент чатов",
     "gifts": "🎁 Отслеживание подарков",
     "usernames": "🔎 Отслеживание юзернеймов",
@@ -28,6 +29,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "styles": True,
     "nicks": False,
     "ai": False,
+    "stt": True,
     "ai_persona": "normal",
     "ai_cooldown": 5,
     "warn_limit": 3,
@@ -45,6 +47,7 @@ GROUP_TOGGLES: dict[str, str] = {
     "styles": "✨ Режимы текста (.пикми и др.)",
     "nicks": "🏷 Автоотметки по именам",
     "ai": "🤖 ИИ-ответы",
+    "stt": "🗣 Расшифровка голосовых",
 }
 
 # Личные настройки пользователя (ассистент чатов)
