@@ -41,6 +41,7 @@ class Config:
     stt_language: str | None = None
     stt_max_seconds: int = 300
     stt_model_dir: str = "data/whisper"
+    stt_timeout: int = 240
 
     @property
     def ai_configured(self) -> bool:
@@ -87,4 +88,5 @@ def load_config() -> Config:
         stt_language=os.getenv("STT_LANGUAGE", "").strip() or None,
         stt_max_seconds=_int("STT_MAX_SECONDS", 300),
         stt_model_dir=os.getenv("STT_MODEL_DIR", "").strip() or "data/whisper",
+        stt_timeout=_int("STT_TIMEOUT", 240),
     )

@@ -25,6 +25,16 @@ from .services.usernames import UsernameWatcher
 log = logging.getLogger("bot")
 
 
+async def preload_stt(stt, config) -> None:
+    """Заранее грузит модель Whisper в фоне, чтобы первая расшифровка не ждала скачивания."""
+    if config.stt_backend != "local":
+        return
+    try:
+        await stt.ensure_model()
+    except Exception as e:  # noqa: BLE001
+        log.warning("Модель Whisper не загрузилась при старте: %s", e)
+
+
 async def cleanup_loop(db: Database, days: int) -> None:
     while True:
         try:
@@ -89,6 +99,7 @@ async def main() -> None:
     dp.include_routers(*get_routers())
 
     tasks = [
+        asyncio.create_task(preload_stt(stt, config)),
         asyncio.create_task(gift_watcher.run()),
         asyncio.create_task(resale_watcher.run()),
         asyncio.create_task(username_watcher.run()),

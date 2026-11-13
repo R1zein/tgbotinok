@@ -448,3 +448,27 @@ async def test_transcriber_backends(monkeypatch):
     assert await api.transcribe(b"ogg", "voice.ogg", 3) == "текст из api"
     assert sess.url == "https://api.openai.com/v1/audio/transcriptions"
     assert sess.headers["Authorization"] == "Bearer k"
+
+
+async def test_transcriber_timeout():
+    """Зависшая расшифровка обрывается по таймауту и не держит очередь вечно."""
+    import time as _time
+
+    from bot.config import Config
+    from bot.services.stt import STTError, Transcriber
+
+    cfg = Config(bot_token="1:x", admin_ids=frozenset(), db_path=":memory:", api_id=None,
+                 api_hash=None, userbot_session=None, userbot_min_delay=0, gift_poll_interval=30,
+                 username_check_delay=0, username_cycle_interval=60, max_usernames=3,
+                 business_cache_days=1, stt_timeout=1)
+    t = Transcriber(cfg)
+
+    def slow():
+        _time.sleep(5)
+        return "поздно"
+    try:
+        await t._in_thread(slow, timeout=0.3)
+        raise AssertionError("ожидался таймаут")
+    except STTError as e:
+        assert "слишком долго" in str(e)
+    await t.close()
