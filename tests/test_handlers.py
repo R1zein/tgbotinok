@@ -1043,6 +1043,15 @@ async def test_group_ai(env, monkeypatch):
     await feed(upd(message=msg(GROUP, ADMIN, "ии привет, это я")))
     assert "Сейчас тебе пишет сам твой создатель" in seen[-1][0]["content"]
 
+    # ИИ знает имена из настроек автоотметок
+    await db.add_nick(GROUP, OTHER, "отя")
+    await db.add_nick(GROUP, USER, "юзик")
+    await db.add_nick(GROUP, USER, "юзер")
+    await feed(upd(message=msg(GROUP, USER, "ии как меня зовут?")))
+    sys_text, user_text = seen[-1][0]["content"], seen[-1][1]["content"]
+    assert "Other (@other): отя" in sys_text and "User (@user): юзер, юзик" in sys_text
+    assert "в группе его зовут: юзер, юзик" in user_text
+
     # характер ИИ переключается в настройках и уходит в инструкцию
     await feed(cb(ADMIN, "gs:ai_persona", msg(GROUP, BOT_ID, "⚙️")))
     assert (await db.get_chat_settings(GROUP))["ai_persona"] == "sassy"

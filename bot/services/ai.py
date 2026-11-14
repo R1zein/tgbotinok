@@ -63,14 +63,26 @@ def system_prompt(bot_name: str, persona: str, creator: str | None = None,
     return text
 
 
+def people_note(people: list[tuple[str, list[str]]]) -> str:
+    """Имена участников, заданные админами для автоотметок: «Pasha (@pasha) — паша, павел»."""
+    if not people:
+        return ""
+    lines = "\n".join(f"- {who}: {', '.join(names)}" for who, names in people[:50])
+    return ("\n\nКак в этой группе называют участников (имена задали админы; обращайся к людям "
+            f"по ним и понимай, о ком речь, когда их упоминают):\n{lines}")
+
+
 def build_messages(bot_name: str, persona: str, history: list[tuple[str, str]],
                    author: str, question: str, creator: str | None = None,
-                   author_is_creator: bool = False) -> list[dict]:
+                   author_is_creator: bool = False,
+                   people: list[tuple[str, list[str]]] | None = None,
+                   author_names: list[str] | None = None) -> list[dict]:
     lines = "\n".join(f"{a}: {t}" for a, t in history[-MEMORY:])
     user = (f"Последние сообщения чата:\n{lines}\n\n" if lines else "")
-    user += f"Сейчас тебе пишет {author}: {question}\nОтветь ему."
-    return [{"role": "system",
-             "content": system_prompt(bot_name, persona, creator, author_is_creator)},
+    called = f" (в группе его зовут: {', '.join(author_names)})" if author_names else ""
+    user += f"Сейчас тебе пишет {author}{called}: {question}\nОтветь ему."
+    system = system_prompt(bot_name, persona, creator, author_is_creator) + people_note(people or [])
+    return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 
 

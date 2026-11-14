@@ -54,6 +54,20 @@ async def ai_trigger(message: Message, bot: Bot) -> bool | dict:
     return False
 
 
+async def group_people(db: Database, chat_id: int,
+                       author_id: int) -> tuple[list[tuple[str, list[str]]], list[str]]:
+    """Имена из настроек автоотметок: [(«Имя (@ник)», [имена])] и имена автора вопроса."""
+    by_user: dict[int, tuple[str, list[str]]] = {}
+    for r in await db.list_nicks(chat_id):
+        if r["user_id"] not in by_user:
+            name = r["first_name"] or (f"@{r['username']}" if r["username"] else str(r["user_id"]))
+            who = f"{name} (@{r['username']})" if r["username"] and r["first_name"] else name
+            by_user[r["user_id"]] = (who, [])
+        by_user[r["user_id"]][1].append(r["alias"])
+    author = by_user.get(author_id)
+    return list(by_user.values()), (author[1] if author else [])
+
+
 async def creator_label(db: Database, config: Config) -> str | None:
     """Как ИИ называет своего создателя: имя и @юзернейм владельца бота (первый из ADMIN_IDS)."""
     if not config.admin_ids:
@@ -101,10 +115,12 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     reply = message.reply_to_message
     if reply and reply.from_user and reply.from_user.id == me.id and reply.text:
         question = f"(в ответ на твоё сообщение «{reply.text[:300]}») {question}"
+    people, author_names = await group_people(db, chat_id, message.from_user.id)
     messages = build_messages(me.first_name or "бот", persona, memory.get(chat_id),
                               author_name(message), question,
                               creator=await creator_label(db, config),
-                              author_is_creator=message.from_user.id in config.admin_ids)
+                              author_is_creator=message.from_user.id in config.admin_ids,
+                              people=people, author_names=author_names)
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
