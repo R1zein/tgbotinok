@@ -12,6 +12,7 @@ GLOBAL_FEATURES: dict[str, str] = {
     "nicks": "🏷 Автоотметки по именам",
     "ai": "🤖 ИИ-ответы в группах",
     "stt": "🗣 Расшифровка голосовых",
+    "reactions": "😀 Реакции бота в группах",
     "business": "💬 Ассистент чатов",
     "gifts": "🎁 Отслеживание подарков",
     "usernames": "🔎 Отслеживание юзернеймов",
@@ -30,6 +31,8 @@ GROUP_DEFAULTS: dict[str, object] = {
     "nicks": False,
     "ai": False,
     "stt": True,
+    "reactions": False,
+    "reactions_chance": 20,
     "ai_persona": "normal",
     "ai_cooldown": 5,
     "warn_limit": 3,
@@ -48,6 +51,7 @@ GROUP_TOGGLES: dict[str, str] = {
     "nicks": "🏷 Автоотметки по именам",
     "ai": "🤖 ИИ-ответы",
     "stt": "🗣 Расшифровка голосовых",
+    "reactions": "😀 Реакции бота",
 }
 
 # Личные настройки пользователя (ассистент чатов)

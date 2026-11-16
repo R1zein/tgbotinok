@@ -151,6 +151,8 @@ async def env(tmp_path, monkeypatch):
     from bot.handlers.ai import AIMemoryMiddleware
     from bot.services.ai import AIClient
     dp.message.outer_middleware(AIMemoryMiddleware())
+    from bot.handlers.reactions import AutoReactionMiddleware
+    dp.message.outer_middleware(AutoReactionMiddleware())
     dp["ai"] = AIClient(config)
     from bot.services.stt import Transcriber
     dp["stt"] = Transcriber(config)
@@ -1147,3 +1149,50 @@ async def test_ai_answers_voice(env, monkeypatch):
     # голосовое с подписью «ии» — тоже вопрос
     await feed(upd(message=_voice(GROUP, OTHER, caption="ии")))
     assert len(seen) == n + 1
+
+
+async def test_group_reactions(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.reactions as rx
+    rx._last.clear()
+    for words, options in rx.KEYWORDS:  # все эмодзи из ключевых слов — разрешённые Telegram
+        assert set(options) <= set(rx.ALLOWED), options
+    assert set(rx.RANDOM) <= set(rx.ALLOWED)
+
+    def reacts():
+        return [c for c in s.calls if type(c).__name__ == "SetMessageReaction"]
+
+    # выключено — не реагирует
+    await feed(upd(message=msg(GROUP, USER, "ахаха смешно")))
+    assert not reacts()
+
+    await db.set_chat_setting(GROUP, "reactions", True)
+    await db.set_chat_setting(GROUP, "reactions_chance", 100)
+    clock = [1000.0]
+    monkeypatch.setattr(rx.time, "time", lambda: clock[0])
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ахаха смешно")))
+    assert reacts() and reacts()[-1].reaction[0].emoji in ("😁", "🤣")
+    clock[0] += 5
+    await feed(upd(message=msg(GROUP, USER, "спасибо большое")))
+    assert reacts()[-1].reaction[0].emoji in ("🙏", "🤝", "❤")
+    # антифлуд: сразу следующее — без реакции
+    n = len(reacts())
+    await feed(upd(message=msg(GROUP, USER, "люблю вас")))
+    assert len(reacts()) == n
+
+    # команда «реакция 🔥» ответом
+    clock[0] += 5
+    target = msg(GROUP, OTHER, "пост")
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "реакция 🔥", reply_to=target)))
+    r = [c for c in reacts() if c.message_id == target["message_id"]]
+    assert r and r[-1].reaction[0].emoji == "🔥"
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "реакция 🦖", reply_to=target)))
+    assert any("не может" in t for t in s.texts())
+
+    # частота настраивается в /settings
+    await db.set_chat_setting(GROUP, "reactions_chance", 20)
+    await feed(cb(ADMIN, "gs:reactions_chance", msg(GROUP, BOT_ID, "⚙️")))
+    assert (await db.get_chat_settings(GROUP))["reactions_chance"] == 35

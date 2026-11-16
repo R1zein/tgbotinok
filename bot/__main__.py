@@ -14,6 +14,7 @@ from .db import Database
 from .handlers import get_routers
 from .handlers.ai import AIMemoryMiddleware
 from .handlers.nicks import NickMentionMiddleware
+from .handlers.reactions import AutoReactionMiddleware
 from .services.ai import AIClient
 from .services.stt import Transcriber
 from .middlewares import TrackMiddleware
@@ -96,6 +97,7 @@ async def main() -> None:
     dp.callback_query.outer_middleware(track)
     dp.message.outer_middleware(NickMentionMiddleware())
     dp.message.outer_middleware(AIMemoryMiddleware())
+    dp.message.outer_middleware(AutoReactionMiddleware())
     dp.include_routers(*get_routers())
 
     tasks = [

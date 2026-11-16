@@ -77,6 +77,12 @@ else
 fi
 
 echo
+read -rp "Включить автообновление с GitHub (проверка каждые 5 минут)? (y/n): " au < /dev/tty
+if [[ "$au" =~ ^[YyДд] ]]; then
+    bash scripts/autoupdate.sh --install
+fi
+
+echo
 echo "=== 4/4 Запуск ==="
 docker compose up -d --build
 echo

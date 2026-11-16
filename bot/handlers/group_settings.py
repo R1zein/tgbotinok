@@ -6,6 +6,7 @@ from ..db import Database
 from ..features import GROUP_TOGGLES
 from ..services.ai import PERSONAS
 from .ai import COOLDOWNS
+from .reactions import CHANCES
 from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
 
@@ -33,6 +34,10 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
     if s.get("nicks") and db.feature_enabled("nicks"):
         rows.append([InlineKeyboardButton(text="🏷 Настроить имена для отметок",
                                           callback_data="nk:start")])
+    if s.get("reactions") and db.feature_enabled("reactions"):
+        rows.append([InlineKeyboardButton(
+            text=f"😀 Частота реакций: {s.get('reactions_chance', 20)}%",
+            callback_data="gs:reactions_chance")])
     if s.get("ai") and db.feature_enabled("ai"):
         label = PERSONAS.get(s.get("ai_persona"), PERSONAS["normal"])[0]
         rows.append([InlineKeyboardButton(text=f"🤖 Характер ИИ: {label}",
@@ -75,6 +80,9 @@ async def cb_settings(call: CallbackQuery, bot: Bot, db: Database):
         order = list(PERSONAS)
         cur = s.get("ai_persona") if s.get("ai_persona") in PERSONAS else "normal"
         await db.set_chat_setting(chat_id, key, order[(order.index(cur) + 1) % len(order)])
+    elif key == "reactions_chance":
+        cur = int(s.get("reactions_chance", 20))
+        await db.set_chat_setting(chat_id, key, next((c for c in CHANCES if c > cur), CHANCES[0]))
     elif key == "ai_cooldown":
         cur = int(s.get("ai_cooldown", 5))
         nxt = next((c for c in COOLDOWNS if c > cur), COOLDOWNS[0])
