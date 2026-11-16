@@ -1,6 +1,7 @@
 """ИИ-ответы через API, совместимый с OpenAI (по умолчанию DeepSeek)."""
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 
@@ -42,6 +43,32 @@ class ChatMemory:
         return list(self._chats.get(chat_id, ()))
 
 
+# Реакции, которые ИИ выбирает по эмоции сообщения (только стандартные, доступные ботам)
+REACTION_GUIDE = (
+    "оскорбление или наезд (особенно на тебя) — 🤡 🗿 😡 🤬; смешно — 🤣 😁; похвала, любовь — "
+    "❤ 🥰 😍 🫡; грусть — 😢 😭 💔; шок, удивление — 🤯 😱; радость, успех — 🎉 🔥 🏆 💯; "
+    "благодарность — 🙏 🤝; сомнение — 🤔 🤨; скука — 🥱; кринж, отвращение — 🤮 🗿; "
+    "флирт — 😘 💋; страх — 😨; хитрость — 😈"
+)
+REACTION_SET = {"🤡", "🗿", "😡", "🤬", "🤣", "😁", "❤", "🥰", "😍", "🫡", "😢", "😭", "💔",
+                "🤯", "😱", "🎉", "🔥", "🏆", "💯", "🙏", "🤝", "🤔", "🤨", "🥱", "🤮", "😘",
+                "💋", "😨", "😈", "👍", "👀", "😎", "🤗", "👏", "🌚", "🙈"}
+_REACTION_LINE = re.compile(r"^\s*(?:РЕАКЦИЯ|REACTION)\s*:\s*(\S*)\s*\n?", re.IGNORECASE)
+
+
+def clean_emoji(raw: str) -> str | None:
+    emoji = (raw or "").replace("\ufe0f", "").strip()
+    return emoji if emoji in REACTION_SET else None
+
+
+def parse_reaction(answer: str) -> tuple[str | None, str]:
+    """Отделяет строку «РЕАКЦИЯ: 🤡» в начале ответа модели. (эмодзи или None, текст ответа)."""
+    m = _REACTION_LINE.match(answer or "")
+    if not m:
+        return None, (answer or "").strip()
+    return clean_emoji(m.group(1)), answer[m.end():].strip()
+
+
 def system_prompt(bot_name: str, persona: str, creator: str | None = None,
                   author_is_creator: bool = False) -> str:
     style = PERSONAS.get(persona, PERSONAS["normal"])[1]
@@ -50,6 +77,11 @@ def system_prompt(bot_name: str, persona: str, creator: str | None = None,
         "Пиши по-русски, если тебе пишут по-русски. Обычно 1–4 предложения, без длинных списков "
         "и без Markdown. Не притворяйся человеком, если спрашивают прямо. Не оскорбляй людей по "
         "национальности, полу, внешности и т.п., не помогай с опасными или незаконными вещами."
+    )
+    text += (
+        " Формат ответа: первой строкой напиши «РЕАКЦИЯ: <эмодзи>» — реакцию на сообщение "
+        f"собеседника по его эмоции и отношению ({REACTION_GUIDE}); если эмоции нет — "
+        "«РЕАКЦИЯ: нет». Со следующей строки — сам ответ."
     )
     if creator:
         text += (
@@ -116,7 +148,19 @@ class AIClient:
             self._day, self._used = day, 0
         return self._used < self.config.ai_daily_limit
 
-    async def complete(self, messages: list[dict]) -> str:
+    async def pick_reaction(self, text: str) -> str | None:
+        """Реакция на обычное сообщение чата по его эмоции (короткий дешёвый запрос)."""
+        answer = await self.complete([
+            {"role": "system", "content": (
+                "Ты выбираешь реакцию-эмодзи на сообщение в групповом чате по его эмоции и тону. "
+                f"Подсказки: {REACTION_GUIDE}. Ответь ровно одним эмодзи из подсказок или словом "
+                "«нет», если эмоции нет.")},
+            {"role": "user", "content": text[:500]},
+        ], max_tokens=8, temperature=0.3)
+        return clean_emoji(answer.split()[0] if answer.split() else "")
+
+    async def complete(self, messages: list[dict], max_tokens: int = MAX_TOKENS,
+                       temperature: float = 1.0) -> str:
         if not self.config.ai_configured:
             raise AIError("ИИ не настроен: администратор бота не добавил ключ API.")
         if not self.budget_left():
@@ -130,7 +174,7 @@ class AIClient:
                     f"{self.config.ai_base_url.rstrip('/')}/chat/completions",
                     headers={"Authorization": f"Bearer {self.config.ai_api_key}"},
                     json={"model": self.config.ai_model, "messages": messages,
-                          "max_tokens": MAX_TOKENS, "temperature": 1.0},
+                          "max_tokens": max_tokens, "temperature": temperature},
                 ) as resp:
                     status = resp.status
                     data = await resp.json(content_type=None)

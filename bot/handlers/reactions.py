@@ -1,7 +1,8 @@
 """Реакции бота в группах.
 
 - Авто-реакции (включаются в /settings): с заданной вероятностью бот ставит на сообщение
-  подходящую реакцию — по ключевым словам («ахах» → 😁, «спасибо» → 🙏…) или случайную.
+  реакцию по его эмоции — её выбирает ИИ (если настроен ключ), иначе по ключевым словам.
+- Когда ИИ отвечает на сообщение, он сам ставит на него реакцию по эмоции (см. handlers/ai.py).
 - Команда «реакция 🔥» ответом на сообщение — поставить эту реакцию.
 
 Ботам доступны только стандартные реакции Telegram (не премиум-эмодзи и не платные).
@@ -119,5 +120,19 @@ class AutoReactionMiddleware(BaseMiddleware):
             return
         if random.randint(1, 100) > int(settings.get("reactions_chance", 20)):
             return
+        from .ai import _recorded  # на сообщения, которым ответил ИИ, реакцию ставит сам ИИ
+        if (message.chat.id, message.message_id) in _recorded or not text.strip():
+            return
         _last[message.chat.id] = now
-        await react(data["bot"], message.chat.id, message.message_id, pick_reaction(text))
+        emoji = None
+        ai, config = data.get("ai"), data.get("config")
+        if ai is not None and config is not None and config.ai_configured:
+            try:
+                emoji = await ai.pick_reaction(text)
+            except Exception:  # noqa: BLE001 — ИИ недоступен: просто без реакции
+                return
+            if not emoji:
+                return  # ИИ решил, что эмоции нет
+        else:
+            emoji = pick_reaction(text)
+        await react(data["bot"], message.chat.id, message.message_id, emoji)

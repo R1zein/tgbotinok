@@ -13,9 +13,10 @@ from aiogram.types import Message, TelegramObject
 
 from ..config import Config
 from ..db import Database
-from ..services.ai import AIClient, AIError, ChatMemory, build_messages
+from ..services.ai import AIClient, AIError, ChatMemory, build_messages, parse_reaction
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
+from .reactions import react
 
 router = Router(name="ai")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
@@ -131,6 +132,9 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
+    emoji, answer = parse_reaction(answer)
+    if emoji:  # реакция на сообщение по его эмоции — помимо ответа
+        await react(bot, chat_id, message.message_id, emoji)
     answer = answer[:3500] or "🤔"
     memory.add(chat_id, me.first_name or "бот", answer)
     await message.reply(answer, parse_mode=None)

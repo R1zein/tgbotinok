@@ -1196,3 +1196,52 @@ async def test_group_reactions(env, monkeypatch):
     await db.set_chat_setting(GROUP, "reactions_chance", 20)
     await feed(cb(ADMIN, "gs:reactions_chance", msg(GROUP, BOT_ID, "⚙️")))
     assert (await db.get_chat_settings(GROUP))["reactions_chance"] == 35
+
+
+async def test_ai_reacts_by_emotion(env, monkeypatch):
+    """ИИ ставит реакцию по эмоции сообщения помимо ответа; авто-реакции — через ИИ."""
+    import dataclasses
+
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    import bot.handlers.reactions as rx
+    aih.memory._chats.clear()
+    aih._last_answer.clear()
+    rx._last.clear()
+    await db.set_chat_setting(GROUP, "ai", True)
+
+    async def rude_complete(messages, **kw):
+        assert "РЕАКЦИЯ:" in messages[0]["content"]  # модель просят выбрать реакцию
+        return "РЕАКЦИЯ: 🤡\nСам такой 😏"
+    monkeypatch.setattr(dp["ai"], "complete", rude_complete)
+
+    def reacts():
+        return [c for c in s.calls if type(c).__name__ == "SetMessageReaction"]
+
+    s.clear()
+    q = msg(GROUP, USER, "ии ты тупой бот")
+    await feed(upd(message=q))
+    r = reacts()
+    assert r and r[-1].reaction[0].emoji == "🤡" and r[-1].message_id == q["message_id"]
+    sent = [c for c in s.calls if type(c).__name__ == "SendMessage"][-1]
+    assert sent.text == "Сам такой 😏"  # строка с реакцией в ответ не попадает
+
+    # авто-реакции на обычные сообщения: эмоцию определяет ИИ (если есть ключ)
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="sk-test")
+    await db.set_chat_setting(GROUP, "reactions", True)
+    await db.set_chat_setting(GROUP, "reactions_chance", 100)
+    picked = []
+
+    async def fake_pick(text):
+        picked.append(text)
+        return "😢" if "грустно" in text else None
+    monkeypatch.setattr(dp["ai"], "pick_reaction", fake_pick)
+    clock = [5000.0]
+    monkeypatch.setattr(rx.time, "time", lambda: clock[0])
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, "мне сегодня грустно")))
+    assert reacts() and reacts()[-1].reaction[0].emoji == "😢"
+    clock[0] += 5
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, "обычное сообщение")))
+    assert not reacts() and picked[-1] == "обычное сообщение"  # ИИ сказал «нет» — без реакции
