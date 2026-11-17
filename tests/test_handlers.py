@@ -1608,6 +1608,9 @@ async def test_ai_conversation_cannot_issue_second_punishment(env, monkeypatch):
     ("бот, замути @user на 10 минут за флуд", False, "mute", 600),
     ("бот дай мут @user 2h за флуд", False, "mute", 7200),
     ("бот, пожалуйста замуть его на 1 час", True, "mute", 3600),
+    ("бот замути @user на час за флуд", False, "mute", 3600),
+    ("бот замути @user на полчаса за флуд", False, "mute", 1800),
+    ("бот замути @user на два часа за флуд", False, "mute", 7200),
 ])
 async def test_natural_admin_requests(env, request_text, use_reply, action, seconds):
     """Настоящие функции модерации, без вызовов ИИ и без включения ИИ в группе."""
@@ -1626,6 +1629,59 @@ async def test_natural_admin_requests(env, request_text, use_reply, action, seco
         expiry = restrictions[0].until_date
         expiry = int(expiry.timestamp()) if hasattr(expiry, "timestamp") else expiry
         assert before + seconds <= expiry <= int(time.time()) + seconds
+
+
+@pytest.mark.parametrize("command, mute", [
+    ("бот замути Пашу на час, причину сам придумай", True),
+    ("мут Пашу на час причину сам придумай", True),
+    ("бот выдай варн Паше причину придумай сам", False),
+])
+async def test_requested_reason_with_name_and_human_duration(env, monkeypatch, command, mute):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.add_nick(GROUP, USER, "паша")
+    seen = []
+
+    async def complete(messages, **kw):
+        seen.append(messages)
+        return "По просьбе администратора — пауза <для отдыха>."
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    s.clear()
+    before = int(time.time())
+    await feed(upd(message=msg(GROUP, ADMIN, command)))
+    assert len(seen) == 1
+    assert any("Причина: По просьбе администратора — пауза &lt;для отдыха&gt;." in t
+               for t in s.texts())
+    if mute:
+        restrictions = [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+        assert len(restrictions) == 1 and restrictions[0].user_id == USER
+        until_date = restrictions[0].until_date
+        until_date = int(until_date.timestamp()) if hasattr(until_date, "timestamp") else until_date
+        assert before + 3600 <= until_date <= int(time.time()) + 3600
+        assert any("на 1 ч" in t for t in s.texts())
+    else:
+        assert await db.get_warns(GROUP, USER) == 1
+
+
+async def test_requested_reason_fallback_and_unknown_duration(env, monkeypatch):
+    from bot.services.ai import AIError
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.add_nick(GROUP, USER, "паша")
+
+    async def unavailable(*args, **kw):
+        raise AIError("ИИ недоступен")
+
+    monkeypatch.setattr(dp["ai"], "complete", unavailable)
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "бот замути Пашу на час сам придумай причину")))
+    assert "RestrictChatMember" in s.names()
+    assert any("Причина: По просьбе администратора" in t for t in s.texts())
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "бот замути Пашу на непонятный срок")))
+    assert "RestrictChatMember" not in s.names()
+    assert any("Не понял срок мута" in t for t in s.texts())
 
 
 @pytest.mark.parametrize("request_text", ["бот дай варн @user за флуд",
