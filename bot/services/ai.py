@@ -76,8 +76,48 @@ def parse_reaction(answer: str) -> tuple[str | None, str]:
     return clean_emoji(m.group(1)), answer[m.end():].strip()
 
 
+_HEADER = re.compile(r"^\s*(РЕАКЦИЯ|REACTION|НАКАЗАНИЕ|PUNISH)\s*:\s*(.*?)\s*$", re.IGNORECASE)
+SKIP_WORD = "ПРОПУСК"
+MUTE_MIN, MUTE_MAX = 5, 60
+
+
+def parse_punishment(raw: str) -> tuple[str, int] | None:
+    """«варн» → ("warn", 0); «мут 30» → ("mute", 30); «нет»/мусор → None."""
+    low = (raw or "").lower().strip()
+    if low.startswith(("варн", "warn", "пред")):
+        return "warn", 0
+    if low.startswith(("мут", "mute")):
+        m = re.search(r"\d+", low)
+        minutes = int(m.group()) if m else 15
+        return "mute", max(MUTE_MIN, min(MUTE_MAX, minutes))
+    return None
+
+
+def parse_reply(answer: str) -> dict:
+    """Разбор ответа модели: служебные строки (РЕАКЦИЯ, НАКАЗАНИЕ) в начале, затем текст.
+    Возвращает {"reaction", "punish", "text", "skip"}; skip — модель решила не отвечать."""
+    reaction = punish = None
+    lines = (answer or "").strip().split("\n")
+    while lines:
+        m = _HEADER.match(lines[0])
+        if not m:
+            break
+        key, value = m.group(1).upper(), m.group(2)
+        if key in ("РЕАКЦИЯ", "REACTION"):
+            reaction = clean_emoji(value.split()[0] if value.split() else "")
+        else:
+            punish = parse_punishment(value)
+        lines.pop(0)
+    text = "\n".join(lines).strip()
+    skip = not text or text.upper().startswith(SKIP_WORD)
+    return {"reaction": reaction, "punish": punish, "text": "" if skip else text, "skip": skip}
+
+
 def system_prompt(bot_name: str, persona: str, creator: str | None = None,
-                  author_is_creator: bool = False) -> str:
+                  author_is_creator: bool = False, punish: bool = False,
+                  passive: str | None = None) -> str:
+    """passive: None — к боту обратились напрямую; "reply" — может сам вмешаться;
+    "silent" — отвечать нельзя, только решить о наказании."""
     style = PERSONAS.get(persona, PERSONAS["normal"])[1]
     text = (
         f"Ты — {bot_name}, бот-участник группового чата в Telegram. {style} "
@@ -88,8 +128,29 @@ def system_prompt(bot_name: str, persona: str, creator: str | None = None,
     text += (
         " Формат ответа: первой строкой напиши «РЕАКЦИЯ: <эмодзи>» — реакцию на сообщение "
         f"собеседника по его эмоции и отношению ({REACTION_GUIDE}); если эмоции нет — "
-        "«РЕАКЦИЯ: нет». Со следующей строки — сам ответ."
+        "«РЕАКЦИЯ: нет»."
     )
+    if punish:
+        who = f"тебя или твоего создателя ({creator})" if creator else "тебя"
+        text += (
+            " Второй строкой напиши «НАКАЗАНИЕ: нет», «НАКАЗАНИЕ: варн» или «НАКАЗАНИЕ: мут <минуты "
+            f"от {MUTE_MIN} до {MUTE_MAX}>». Наказывай ТОЛЬКО за явное, злое оскорбление {who}: "
+            "варн — за грубое оскорбление, мут — за жёсткое или повторное. Не наказывай за шутки и "
+            "дружеские подколы, мат без оскорбления, критику, споры, оскорбления других людей. "
+            "Создателя не наказывай никогда. Если сомневаешься — «нет»."
+        )
+    if passive == "reply":
+        text += (
+            " Это сообщение адресовано не тебе — ты просто читаешь чат. Вмешивайся редко: только "
+            "если вопрос к чату, на который ты можешь полезно ответить, речь идёт о тебе, или есть "
+            "повод для очень удачной шутки. В остальных случаях вместо ответа напиши ровно "
+            f"«{SKIP_WORD}». Со следующей строки после служебных — ответ или «{SKIP_WORD}»."
+        )
+    elif passive == "silent":
+        text += (f" Это сообщение адресовано не тебе: не отвечай на него, после служебных строк "
+                 f"напиши ровно «{SKIP_WORD}».")
+    else:
+        text += " Со следующей строки после служебных — сам ответ."
     if creator:
         text += (
             f" Тебя создал {creator} — это твой создатель и разработчик. Если спрашивают, кто тебя "
@@ -116,12 +177,17 @@ def build_messages(bot_name: str, persona: str, history: list[tuple[str, str]],
                    author_is_creator: bool = False,
                    people: list[tuple[str, list[str]]] | None = None,
                    author_names: list[str] | None = None,
-                   author_style: list[str] | None = None) -> list[dict]:
+                   author_style: list[str] | None = None, punish: bool = False,
+                   passive: str | None = None) -> list[dict]:
     lines = "\n".join(f"{a}: {t}" for a, t in history[-MEMORY:])
     user = (f"Последние сообщения чата:\n{lines}\n\n" if lines else "")
     called = f" (в группе его зовут: {', '.join(author_names)})" if author_names else ""
-    user += f"Сейчас тебе пишет {author}{called}: {question}\nОтветь ему."
-    system = system_prompt(bot_name, persona, creator, author_is_creator) + people_note(people or [])
+    if passive:
+        user += f"Новое сообщение в чате от {author}{called}: {question}"
+    else:
+        user += f"Сейчас тебе пишет {author}{called}: {question}\nОтветь ему."
+    system = system_prompt(bot_name, persona, creator, author_is_creator, punish, passive) \
+        + people_note(people or [])
     if persona == "adaptive" and author_style:
         examples = "\n".join(f"- {t}" for t in author_style[-STYLE_SAMPLES:])
         system += (f"\n\nТак обычно пишет {author} — скопируй этот стиль в ответе ему:\n"

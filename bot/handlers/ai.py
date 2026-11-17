@@ -4,20 +4,28 @@
 «ии вопрос». Для контекста помнит последние сообщения группы (только в памяти, и только
 в группах, где функция включена). Включается администратором в /settings.
 """
+import asyncio
+import logging
+import re
 import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.enums import ChatAction
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, TelegramObject
 
 from ..config import Config
 from ..db import Database
-from ..services.ai import AIClient, AIError, ChatMemory, build_messages, parse_reaction
+from ..services.ai import AIClient, AIError, ChatMemory, build_messages, parse_reply
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
+from ..utils.perms import is_chat_admin
+from ..utils.text import mention
+from .moderation import do_ban, do_kick, do_mute, undo_kb
 from .reactions import react
 
+log = logging.getLogger(__name__)
 router = Router(name="ai")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
@@ -116,10 +124,52 @@ async def _typing(bot: Bot, message: Message) -> None:
         pass
 
 
+async def apply_punishment(message: Message, bot: Bot, db: Database, config: Config,
+                           punish: tuple[str, int]) -> None:
+    """Варн или мут, которые решил выдать ИИ за оскорбление бота/создателя."""
+    chat_id, user = message.chat.id, message.from_user
+    if not user or user.is_bot or user.id in config.admin_ids:
+        return  # создателя не наказываем
+    if await is_chat_admin(bot, chat_id, user.id):
+        return  # админов Telegram ограничить не даст — и не пытаемся
+    who = mention(user.id, user.full_name)
+    kind, minutes = punish
+    try:
+        if kind == "mute":
+            await do_mute(bot, chat_id, user.id, minutes * 60)
+            await message.reply(f"🔇 {who} заглушен(а) на {minutes} мин за оскорбление.",
+                                reply_markup=undo_kb("unmute", user.id, "🔊 Размутить"))
+            return
+        settings = await db.get_chat_settings(chat_id)
+        limit = int(settings.get("warn_limit", 3))
+        count = await db.add_warn(chat_id, user.id)
+        text = f"⚠️ {who} получает предупреждение ({count}/{limit}) за оскорбление."
+        if count >= limit:
+            await db.reset_warns(chat_id, user.id)
+            action = settings.get("warn_action", "mute")
+            if action == "ban":
+                await do_ban(bot, chat_id, user.id, None)
+                text += "\n⛔ Лимит предупреждений — бан."
+            elif action == "kick":
+                await do_kick(bot, chat_id, user.id)
+                text += "\n👢 Лимит предупреждений — кик."
+            else:
+                await do_mute(bot, chat_id, user.id, 86400)
+                text += "\n🔇 Лимит предупреждений — мут на сутки."
+            await message.reply(text)
+        else:
+            await message.reply(text, reply_markup=undo_kb("unwarn", user.id, "➖ Снять варн"))
+    except TelegramBadRequest as e:
+        log.info("ИИ не смог наказать %s: %s", user.id, e)
+        await message.reply("⚠️ Хотел наказать, но у меня нет прав администратора на это.")
+
+
 async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
                    question: str, memory_text: str) -> None:
     chat_id = message.chat.id
-    persona = (await db.get_chat_settings(chat_id)).get("ai_persona", "normal")
+    settings = await db.get_chat_settings(chat_id)
+    persona = settings.get("ai_persona", "normal")
+    punish = bool(settings.get("ai_punish"))
     raw_question = question
     me = await bot.me()
     reply = message.reply_to_message
@@ -134,7 +184,8 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               author_name(message), question,
                               creator=await creator_label(db, config),
                               author_is_creator=message.from_user.id in config.admin_ids,
-                              people=people, author_names=author_names, author_style=style)
+                              people=people, author_names=author_names, author_style=style,
+                              punish=punish)
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
@@ -145,12 +196,14 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
-    emoji, answer = parse_reaction(answer)
-    if emoji:  # реакция на сообщение по его эмоции — помимо ответа
-        await react(bot, chat_id, message.message_id, emoji)
-    answer = answer[:3500] or "🤔"
+    res = parse_reply(answer)
+    if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
+        await react(bot, chat_id, message.message_id, res["reaction"])
+    answer = res["text"][:3500] or "🤔"
     memory.add(chat_id, me.first_name or "бот", answer)
     await message.reply(answer, parse_mode=None)
+    if punish and res["punish"]:
+        await apply_punishment(message, bot, db, config, res["punish"])
 
 
 @router.message(ai_trigger)
@@ -201,6 +254,95 @@ async def ai_voice(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     await _respond(message, bot, db, ai, config, text, f"[голосовое] {text}")
 
 
+# ---------- ИИ читает чат сам ----------
+PASSIVE_EVERY = 15      # обычные сообщения оцениваем не чаще раза в 15 сек на чат
+PASSIVE_RELEVANT = 2    # сообщения про бота/создателя — почти всегда
+_passive_last: dict[int, float] = {}
+_bg_tasks: set[asyncio.Task] = set()
+
+
+async def target_words(bot: Bot, db: Database, config: Config, chat_id: int) -> set[str]:
+    """Слова, по которым понятно, что речь о боте или создателе (имена, ники, «бот»)."""
+    me = await bot.me()
+    words: set[str] = set()
+    for w in (me.first_name, me.username):
+        if w:
+            words.add(w.lower())
+    for uid in config.admin_ids:
+        row = await db.fetchone("SELECT first_name, username FROM users WHERE id=?", (uid,))
+        if row:
+            words.update(w.lower() for w in (row["first_name"], row["username"]) if w)
+        words.update(r["alias"] for r in await db.list_nicks(chat_id) if r["user_id"] == uid)
+    return {w for w in words if len(w) >= 3}
+
+
+BOT_FORMS = {"бот", "бота", "боту", "ботом", "боте", "боты", "ботяра", "ботик", "bot"}
+
+
+def mentions_target(text: str, words: set[str]) -> bool:
+    """Есть ли в тексте слово про бота/создателя. Сравниваем по словам, а не подстрокой:
+    «работа» не должна считаться упоминанием «бота». Имена — с учётом окончаний (паш-е)."""
+    tokens = re.findall(r"[a-zа-яё0-9_]+", text.lower().replace("ё", "е"))
+    for t in tokens:
+        if t in BOT_FORMS or t in words:
+            return True
+        if any(len(w) >= 4 and w not in BOT_FORMS and t.startswith(w[:-1]) and len(t) - len(w) <= 2
+               for w in words):
+            return True
+    return False
+
+
+async def passive_check(message: Message, history: list[tuple[str, str]],
+                        data: dict[str, Any]) -> None:
+    """Сообщение не адресовано боту: ИИ решает, вмешаться ли и не наказать ли за оскорбление."""
+    db: Database = data["db"]
+    bot: Bot = data["bot"]
+    ai: AIClient | None = data.get("ai")
+    config: Config = data["config"]
+    if ai is None or not config.ai_configured:
+        return
+    chat_id = message.chat.id
+    settings = await db.get_chat_settings(chat_id)
+    proactive, punish = bool(settings.get("ai_proactive")), bool(settings.get("ai_punish"))
+    if not (proactive or punish):
+        return
+    text = (message.text or "").strip()
+    if len(text) < 3 or text[:1] in PREFIXES:
+        return
+    relevant = mentions_target(text, await target_words(bot, db, config, chat_id))
+    if not relevant and not proactive:
+        return  # только наказания: проверяем лишь сообщения про бота или создателя
+    now = time.time()
+    if now - _passive_last.get(chat_id, 0) < (PASSIVE_RELEVANT if relevant else PASSIVE_EVERY):
+        return
+    _passive_last[chat_id] = now
+
+    me = await bot.me()
+    people, author_names = await group_people(db, chat_id, message.from_user.id)
+    persona = settings.get("ai_persona", "normal")
+    style = await db.get_style(message.from_user.id) if persona == "adaptive" else None
+    messages = build_messages(me.first_name or "бот", persona, history, author_name(message), text,
+                              creator=await creator_label(db, config),
+                              author_is_creator=message.from_user.id in config.admin_ids,
+                              people=people, author_names=author_names, author_style=style,
+                              punish=punish, passive="reply" if proactive else "silent")
+    try:
+        res = parse_reply(await ai.complete(messages))
+    except AIError:
+        return  # в фоне ошибки ИИ не показываем
+    if proactive and not res["skip"]:
+        cooldown = int(settings.get("ai_cooldown", 5))
+        if time.time() - _last_answer.get(chat_id, 0) >= cooldown:
+            _last_answer[chat_id] = time.time()
+            if res["reaction"]:
+                await react(bot, chat_id, message.message_id, res["reaction"])
+            answer = res["text"][:3500]
+            memory.add(chat_id, me.first_name or "бот", answer)
+            await message.reply(answer, parse_mode=None)
+    if punish and res["punish"]:
+        await apply_punishment(message, bot, db, config, res["punish"])
+
+
 class AIMemoryMiddleware(BaseMiddleware):
     """Запоминает сообщения групп, где включены ИИ-ответы, — для контекста."""
 
@@ -213,6 +355,10 @@ class AIMemoryMiddleware(BaseMiddleware):
                 if (event.chat.id, event.message_id) in _recorded:
                     _recorded.discard((event.chat.id, event.message_id))
                 elif await data["db"].group_feature(event.chat.id, "ai"):
+                    history = memory.get(event.chat.id)  # контекст до этого сообщения
+                    task = asyncio.create_task(passive_check(event, history, data))
+                    _bg_tasks.add(task)
+                    task.add_done_callback(_bg_tasks.discard)
                     memory.add(event.chat.id, author_name(event), event.text)
                     settings = await data["db"].get_chat_settings(event.chat.id)
                     if settings.get("ai_persona") == "adaptive":

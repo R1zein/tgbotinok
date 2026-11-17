@@ -1311,3 +1311,99 @@ async def test_ai_adaptive_persona(env, monkeypatch):
     await db.set_chat_setting(GROUP, "ai_persona", "normal")
     await feed(upd(message=msg(GROUP, USER, "новое сообщение")))
     assert len(await db.get_style(USER)) == 3
+
+
+async def test_ai_proactive_and_punish(env, monkeypatch):
+    """ИИ сам решает, вмешаться ли, и наказывает за оскорбления бота/создателя — с проверками."""
+    import asyncio
+    import dataclasses
+
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    aih.memory._chats.clear()
+    aih._last_answer.clear()
+    aih._passive_last.clear()
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="sk-test")
+    await feed(upd(message=msg(GROUP, USER, "всем привет")))
+    await db.set_chat_setting(GROUP, "ai", True)
+    clock = [10_000.0]
+    monkeypatch.setattr(aih.time, "time", lambda: clock[0])
+
+    replies = []
+
+    async def fake_complete(messages, **kw):
+        replies.append(messages)
+        return answers.pop(0)
+    monkeypatch.setattr(dp["ai"], "complete", fake_complete)
+
+    async def feed_bg(update):
+        await feed(update)
+        await asyncio.gather(*list(aih._bg_tasks))
+
+    def sent():
+        return [c for c in s.calls if type(c).__name__ == "SendMessage"]
+
+    def restricts():
+        return [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+
+    # всё выключено — ИИ на обычные сообщения не тратится
+    answers = []
+    await feed_bg(upd(message=msg(GROUP, USER, "бот тупой")))
+    assert replies == []
+
+    # «вступает сам»: на мусор — ПРОПУСК, на вопрос к чату — отвечает
+    await db.set_chat_setting(GROUP, "ai_proactive", True)
+    answers = ["РЕАКЦИЯ: нет\nНАКАЗАНИЕ: нет\nПРОПУСК"]
+    s.clear()
+    await feed_bg(upd(message=msg(GROUP, USER, "ну и ладно")))
+    assert len(replies) == 1 and "адресовано не тебе" in replies[-1][0]["content"]
+    assert not sent()
+    clock[0] += 20
+    answers = ["РЕАКЦИЯ: 🤔\nНАКАЗАНИЕ: нет\nПитон, конечно 🙂"]
+    await feed_bg(upd(message=msg(GROUP, OTHER, "какой язык учить новичку?")))
+    assert sent()[-1].text == "Питон, конечно 🙂"
+    # следующее обычное сообщение сразу — не оцениваем (раз в 15 сек)
+    n = len(replies)
+    await feed_bg(upd(message=msg(GROUP, OTHER, "а ещё что посоветуешь")))
+    assert len(replies) == n
+
+    # наказания: только за оскорбление бота/создателя, решает ИИ
+    await db.set_chat_setting(GROUP, "ai_proactive", False)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    n = len(replies)
+    await feed_bg(upd(message=msg(GROUP, USER, "я на работе устал")))  # не про бота — не проверяем
+    assert len(replies) == n
+    clock[0] += 5
+    answers = ["РЕАКЦИЯ: 🤡\nНАКАЗАНИЕ: мут 30\nПРОПУСК"]
+    s.clear()
+    await feed_bg(upd(message=msg(GROUP, USER, "этот бот тупая железка")))
+    assert "НАКАЗАНИЕ" in replies[-1][0]["content"]
+    r = restricts()
+    assert r and r[-1].user_id == USER
+    assert any("заглушен(а) на 30 мин" in t for t in s.texts())
+    assert not [t for t in s.texts() if "ПРОПУСК" in t]  # молчит, только наказание
+
+    # варны с лимитом из настроек
+    await db.set_chat_setting(GROUP, "warn_limit", 2)
+    for i in range(2):
+        clock[0] += 5
+        answers = ["РЕАКЦИЯ: 😡\nНАКАЗАНИЕ: варн\nПРОПУСК"]
+        await feed_bg(upd(message=msg(GROUP, OTHER, f"бот лох {i}")))
+    assert any("Лимит предупреждений" in t for t in s.texts())
+    assert await db.get_warns(GROUP, OTHER) == 0  # сброшены после наказания
+
+    # создателя и админов не наказываем, даже если ИИ «захотел»
+    for who in (ADMIN, ADMIN2):
+        clock[0] += 5
+        answers = ["РЕАКЦИЯ: 🤡\nНАКАЗАНИЕ: мут 60\nПРОПУСК"]
+        s.clear()
+        await feed_bg(upd(message=msg(GROUP, who, "бот глупый")))
+        assert not restricts()
+
+    # при прямом обращении тоже можно наказать
+    clock[0] += 10
+    answers = ["РЕАКЦИЯ: 🗿\nНАКАЗАНИЕ: варн\nСам такой."]
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "ии ты тупой")))
+    assert any(t == "Сам такой." for t in s.texts())
+    assert any("предупреждение" in t for t in s.texts())
