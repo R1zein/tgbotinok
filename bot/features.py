@@ -36,6 +36,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "ai_persona": "normal",
     "ai_cooldown": 5,
     "ai_proactive": False,
+    "ai_passive_every": 0,
     "ai_punish": False,
     "warn_limit": 3,
     "warn_action": "mute",  # mute | kick | ban

@@ -1362,10 +1362,19 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     answers = ["РЕАКЦИЯ: 🤔\nНАКАЗАНИЕ: нет\nПитон, конечно 🙂"]
     await feed_bg(upd(message=msg(GROUP, OTHER, "какой язык учить новичку?")))
     assert sent()[-1].text == "Питон, конечно 🙂"
-    # следующее обычное сообщение сразу — не оцениваем (раз в 15 сек)
+    # по умолчанию ИИ читает каждое сообщение
+    answers = ["РЕАКЦИЯ: нет\nНАКАЗАНИЕ: нет\nПРОПУСК"]
     n = len(replies)
     await feed_bg(upd(message=msg(GROUP, OTHER, "а ещё что посоветуешь")))
+    assert len(replies) == n + 1
+    # частоту можно ограничить: 0 → 5 → 15 сек; тогда следующее сразу — не оцениваем
+    for expected in (5, 15):
+        await feed(cb(ADMIN, "gs:ai_passive_every", msg(GROUP, BOT_ID, "⚙️")))
+        assert (await db.get_chat_settings(GROUP))["ai_passive_every"] == expected
+    n = len(replies)
+    await feed_bg(upd(message=msg(GROUP, OTHER, "и ещё вопрос")))
     assert len(replies) == n
+    await db.set_chat_setting(GROUP, "ai_passive_every", 0)
 
     # наказания: только за оскорбление бота/создателя, решает ИИ
     await db.set_chat_setting(GROUP, "ai_proactive", False)

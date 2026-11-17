@@ -255,8 +255,7 @@ async def ai_voice(message: Message, bot: Bot, db: Database, ai: AIClient, confi
 
 
 # ---------- ИИ читает чат сам ----------
-PASSIVE_EVERY = 15      # обычные сообщения оцениваем не чаще раза в 15 сек на чат
-PASSIVE_RELEVANT = 2    # сообщения про бота/создателя — почти всегда
+PASSIVE_CHOICES = [0, 5, 15, 30, 60]  # как часто ИИ читает обычные сообщения (0 — каждое)
 _passive_last: dict[int, float] = {}
 _bg_tasks: set[asyncio.Task] = set()
 
@@ -313,8 +312,9 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
     if not relevant and not proactive:
         return  # только наказания: проверяем лишь сообщения про бота или создателя
     now = time.time()
-    if now - _passive_last.get(chat_id, 0) < (PASSIVE_RELEVANT if relevant else PASSIVE_EVERY):
-        return
+    every = int(settings.get("ai_passive_every", 0))
+    if not relevant and now - _passive_last.get(chat_id, 0) < every:
+        return  # сообщения про бота/создателя проверяем всегда
     _passive_last[chat_id] = now
 
     me = await bot.me()

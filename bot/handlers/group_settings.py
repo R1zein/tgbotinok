@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from ..db import Database
 from ..features import GROUP_TOGGLES
 from ..services.ai import PERSONAS
-from .ai import COOLDOWNS
+from .ai import COOLDOWNS, PASSIVE_CHOICES
 from .reactions import CHANCES
 from ..utils.filters import Cmd
 from ..utils.perms import is_chat_admin, message_from_admin
@@ -48,6 +48,11 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text=("✅" if s.get("ai_proactive") else "❌") + " 🤖 ИИ вступает в разговор сам",
             callback_data="gs:ai_proactive")])
+        if s.get("ai_proactive"):
+            every = int(s.get("ai_passive_every", 0))
+            rows.append([InlineKeyboardButton(
+                text="🔁 ИИ читает: каждое сообщение" if not every
+                else f"🔁 ИИ читает: раз в {every} сек", callback_data="gs:ai_passive_every")])
         rows.append([InlineKeyboardButton(
             text=("✅" if s.get("ai_punish") else "❌") + " 🤖 ИИ наказывает за оскорбления",
             callback_data="gs:ai_punish")])
@@ -89,6 +94,10 @@ async def cb_settings(call: CallbackQuery, bot: Bot, db: Database):
     elif key == "reactions_chance":
         cur = int(s.get("reactions_chance", 20))
         await db.set_chat_setting(chat_id, key, next((c for c in CHANCES if c > cur), CHANCES[0]))
+    elif key == "ai_passive_every":
+        cur = int(s.get("ai_passive_every", 0))
+        await db.set_chat_setting(chat_id, key,
+                                  next((c for c in PASSIVE_CHOICES if c > cur), PASSIVE_CHOICES[0]))
     elif key in ("ai_proactive", "ai_punish"):
         await db.set_chat_setting(chat_id, key, not s.get(key))
     elif key == "ai_cooldown":
