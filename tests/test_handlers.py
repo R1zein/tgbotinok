@@ -1413,12 +1413,108 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
 
     # при прямом обращении тоже можно наказать
     clock[0] += 10
-    answers = ["РЕАКЦИЯ: 🗿\nНАКАЗАНИЕ: варн\nСам такой."]
+    answers = ["НАКАЗАНИЕ: варн\nПРИЧИНА: нет",
+               "РЕАКЦИЯ: 🗿\nСам такой."]
     s.clear()
     await feed(upd(message=msg(GROUP, USER, "ии ты тупой")))
     assert any(t == "Сам такой." for t in s.texts())
     assert any("предупреждение" in t for t in s.texts())
     assert any("📝 Причина: Адресное оскорбление" in t for t in s.texts())
+
+
+@pytest.mark.parametrize("text, reply_id, caption", [
+    ("@testbot иди нахуй", None, False),
+    ("иди нахуй", BOT_ID, False),
+    ("иди нахуй", ADMIN, False),
+    ("@admin иди нахуй", None, False),
+    ("/ии иди нахуй", None, False),
+    ("@testbot иди нахуй", None, True),
+])
+async def test_ai_moderates_during_cooldown(env, monkeypatch, text, reply_id, caption):
+    """Реальная маршрутизация: отдельная проверка до кулдауна, в том числе ответ создателю."""
+    import dataclasses
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await feed(upd(message=msg(GROUP, ADMIN, "я здесь")))
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="test")
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    await db.set_chat_setting(GROUP, "ai_persona", "adaptive")
+    await db.set_chat_setting(GROUP, "ai_passive_every", 60)
+    aih._last_answer[GROUP] = time.time()
+    seen = []
+
+    async def complete(messages, **kw):
+        seen.append((messages, kw))
+        assert "независимый модератор" in messages[0]["content"]
+        return "НАКАЗАНИЕ: варн\nПРИЧИНА: Адресное оскорбление."
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    reply = msg(GROUP, reply_id, "текст") if reply_id else None
+    s.clear()
+    for _ in range(2):
+        message = (msg(GROUP, USER, reply_to=reply, caption=text) if caption
+                   else msg(GROUP, USER, text, reply_to=reply))
+        await feed(upd(message=message))
+        await asyncio.gather(*list(aih._bg_tasks))
+    assert len(seen) == 2  # пауза ответов и чтения чата не отключает модерацию
+    assert await db.get_warns(GROUP, USER) == 2  # ровно один варн на сообщение
+    assert all(kw["temperature"] == 0 for _, kw in seen)
+    assert "Admin (@admin)" in seen[0][0][0]["content"]
+    if reply_id == ADMIN:
+        assert "создателю бота" in seen[0][0][1]["content"]
+
+
+async def test_ai_text_mention_creator_and_muting(env, monkeypatch):
+    import dataclasses
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="test")
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    seen = []
+
+    async def complete(messages, **kw):
+        seen.append(messages)
+        return "НАКАЗАНИЕ: мут 15\nПРИЧИНА: Грубое оскорбление создателя."
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    s.clear()
+    await feed(upd(message=msg(GROUP, USER, "он иди нахуй", entities=[
+        {"type": "text_mention", "offset": 0, "length": 2, "user": user(ADMIN)},
+    ])))
+    await asyncio.gather(*list(aih._bg_tasks))
+    assert len(seen) == 1
+    assert "упоминание бота или создателя по ID" in seen[0][1]["content"]
+    restrictions = [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+    assert len(restrictions) == 1 and restrictions[0].user_id == USER
+    assert any("Причина: Грубое оскорбление создателя" in t for t in s.texts())
+
+
+async def test_ai_conversation_cannot_issue_second_punishment(env, monkeypatch):
+    import dataclasses
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="test")
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    aih._last_answer.clear()
+    seen = []
+
+    async def complete(messages, **kw):
+        seen.append(messages)
+        if "независимый модератор" in messages[0]["content"]:
+            return "НАКАЗАНИЕ: нет\nПРИЧИНА: нет"
+        return "НАКАЗАНИЕ: варн\nОбычный ответ."
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    await feed(upd(message=msg(GROUP, USER, "@testbot неверно отвечаешь")))
+    await asyncio.gather(*list(aih._bg_tasks))
+    assert len(seen) == 2
+    assert await db.get_warns(GROUP, USER) == 0
 
 
 async def test_ai_called_by_bot_word_and_name(env, monkeypatch):

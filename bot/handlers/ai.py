@@ -17,7 +17,8 @@ from aiogram.types import Message, TelegramObject
 
 from ..config import Config
 from ..db import Database
-from ..services.ai import AIClient, AIError, ChatMemory, build_messages, parse_reply
+from ..services.ai import (AIClient, AIError, ChatMemory, build_messages,
+                           build_moderation_messages, parse_reply)
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
@@ -92,17 +93,29 @@ async def group_people(db: Database, chat_id: int,
     return list(by_user.values()), (author[1] if author else [])
 
 
-async def creator_label(db: Database, config: Config) -> str | None:
-    """Как ИИ называет своего создателя: имя и @юзернейм владельца бота (первый из ADMIN_IDS)."""
+async def creator_profile(db: Database, uid: int, chat_id: int | None = None):
+    row = await db.fetchone("SELECT first_name, username FROM users WHERE id=?", (uid,))
+    if chat_id is not None:
+        member = await db.fetchone(
+            "SELECT first_name, username FROM chat_members WHERE chat_id=? AND user_id=?",
+            (chat_id, uid))
+        if member:
+            return member
+    return row
+
+
+async def creator_label(db: Database, config: Config, chat_id: int | None = None) -> str | None:
+    """Имена создателей из ADMIN_IDS, в том числе знакомых боту только по группе."""
     if not config.admin_ids:
         return None
-    uid = min(config.admin_ids)
-    row = await db.fetchone("SELECT first_name, username FROM users WHERE id=?", (uid,))
-    name = row["first_name"] if row and row["first_name"] else None
-    username = f"@{row['username']}" if row and row["username"] else None
-    if name and username:
-        return f"{name} ({username})"
-    return name or username or "владелец этого бота"
+    labels = []
+    for uid in sorted(config.admin_ids):
+        row = await creator_profile(db, uid, chat_id)
+        name = row["first_name"] if row and row["first_name"] else None
+        username = f"@{row['username']}" if row and row["username"] else None
+        labels.append(f"{name} ({username})" if name and username
+                      else name or username or f"владелец бота (ID {uid})")
+    return "; ".join(labels)
 
 
 async def _cooldown_ok(message: Message, db: Database) -> bool:
@@ -184,7 +197,6 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     chat_id = message.chat.id
     settings = await db.get_chat_settings(chat_id)
     persona = settings.get("ai_persona", "normal")
-    punish = bool(settings.get("ai_punish"))
     raw_question = question
     me = await bot.me()
     reply = message.reply_to_message
@@ -197,17 +209,21 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
         style = await db.get_style(message.from_user.id)
     messages = build_messages(config.ai_name, persona, memory.get(chat_id),
                               author_name(message), question,
-                              creator=await creator_label(db, config),
+                              creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              punish=punish)
+                              punish=False)
+    if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
+        await check_moderation(message, memory.get(chat_id),
+                               {"bot": bot, "db": db, "ai": ai, "config": config},
+                               text=memory_text, direct=True)
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
     _recorded.add((chat_id, message.message_id))
     await _typing(bot, message)
     try:
-        answer = await ai.complete(messages, temperature=0.3 if punish else 1.0)
+        answer = await ai.complete(messages)
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
@@ -217,9 +233,6 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     answer = res["text"][:3500] or "🤔"
     memory.add(chat_id, config.ai_name, answer)
     await message.reply(answer, parse_mode=None)
-    if punish and res["punish"]:
-        await apply_punishment(message, bot, db, config, res["punish"],
-                               res["reason"], memory_text)
 
 
 @router.message(ai_trigger)
@@ -285,11 +298,11 @@ async def target_words(bot: Bot, db: Database, config: Config, chat_id: int) -> 
         if w:
             words.add(w.lower())
     for uid in config.admin_ids:
-        row = await db.fetchone("SELECT first_name, username FROM users WHERE id=?", (uid,))
+        row = await creator_profile(db, uid, chat_id)
         if row:
             words.update(w.lower() for w in (row["first_name"], row["username"]) if w)
         words.update(r["alias"] for r in await db.list_nicks(chat_id) if r["user_id"] == uid)
-    return {w for w in words if len(w) >= 3}
+    return {w for w in words if w}
 
 
 BOT_FORMS = {"бот", "бота", "боту", "ботом", "боте", "боты", "ботяра", "ботик", "bot"}
@@ -298,6 +311,7 @@ BOT_FORMS = {"бот", "бота", "боту", "ботом", "боте", "бот
 def mentions_target(text: str, words: set[str]) -> bool:
     """Есть ли в тексте слово про бота/создателя. Сравниваем по словам, а не подстрокой:
     «работа» не должна считаться упоминанием «бота». Имена — с учётом окончаний (паш-е)."""
+    words = {w.lower().replace("ё", "е") for w in words}
     tokens = re.findall(r"[a-zа-яё0-9_]+", text.lower().replace("ё", "е"))
     for t in tokens:
         if t in BOT_FORMS or t in words:
@@ -308,9 +322,69 @@ def mentions_target(text: str, words: set[str]) -> bool:
     return False
 
 
+async def check_moderation(message: Message, history: list[tuple[str, str]],
+                           data: dict[str, Any], *, text: str | None = None,
+                           direct: bool = False) -> None:
+    """Модерация до разговорного обработчика, независимо от пауз и характера ИИ."""
+    db, bot, config, ai = data["db"], data["bot"], data["config"], data.get("ai")
+    if ai is None or not config.ai_configured or not message.from_user:
+        return
+    settings = await db.get_chat_settings(message.chat.id)
+    if not settings.get("ai_punish"):
+        return
+    text = (text if text is not None else message.text or message.caption or "").strip()
+    if not text:
+        return
+    me = await bot.me()
+    reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+    protected = config.admin_ids | {me.id}
+    reply_target = bool(reply_user and reply_user.id in protected)
+    entities = message.entities or message.caption_entities or []
+    entity_target = any(e.type == "text_mention" and e.user and e.user.id in protected
+                        for e in entities)
+    words = await target_words(bot, db, config, message.chat.id)
+    first = text.split(maxsplit=1)[0].lower().lstrip("".join(PREFIXES)).rstrip(",.!?:;")
+    relevant = (direct or reply_target or entity_target or mentions_target(text, words)
+                or first in call_words(config))
+    if not relevant:
+        return
+    uid = message.from_user.id
+    if uid in config.admin_ids or await is_chat_admin(bot, message.chat.id, uid):
+        log.info("AI moderation chat=%s message=%s: protected author %s",
+                 message.chat.id, message.message_id, uid)
+        return
+    context = ""
+    if reply_user:
+        target = ("боту" if reply_user.id == me.id else "создателю бота"
+                  if reply_user.id in config.admin_ids else "другому участнику")
+        context = f"Это ответ {target} ({reply_user.full_name}, ID {reply_user.id})."
+    if entity_target:
+        context += " Сообщение содержит Telegram-упоминание бота или создателя по ID."
+    if direct:
+        context += " Это прямое обращение к боту."
+    aliases = [r["alias"] for r in await db.list_nicks(message.chat.id)
+               if r["user_id"] in config.admin_ids]
+    if aliases:
+        context += f" Имена создателей, заданные в группе: {', '.join(aliases)}."
+    messages = build_moderation_messages(
+        f"{config.ai_name} (@{me.username}, {me.first_name})",
+        await creator_label(db, config, message.chat.id), f"{author_name(message)} (ID {uid})",
+        text, history, context)
+    try:
+        res = parse_reply(await ai.complete(messages, max_tokens=250, temperature=0))
+    except AIError as e:
+        log.warning("AI moderation chat=%s message=%s failed: %s",
+                    message.chat.id, message.message_id, e)
+        return
+    log.info("AI moderation chat=%s message=%s decision=%s",
+             message.chat.id, message.message_id, res["punish"])
+    if res["punish"]:
+        await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
+
+
 async def passive_check(message: Message, history: list[tuple[str, str]],
                         data: dict[str, Any]) -> None:
-    """Сообщение не адресовано боту: ИИ решает, вмешаться ли и не наказать ли за оскорбление."""
+    """Разговорный ИИ решает, вмешаться ли в беседу; наказания проверяются отдельно."""
     db: Database = data["db"]
     bot: Bot = data["bot"]
     ai: AIClient | None = data.get("ai")
@@ -319,15 +393,13 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
         return
     chat_id = message.chat.id
     settings = await db.get_chat_settings(chat_id)
-    proactive, punish = bool(settings.get("ai_proactive")), bool(settings.get("ai_punish"))
-    if not (proactive or punish):
+    proactive = bool(settings.get("ai_proactive"))
+    if not proactive:
         return
     text = (message.text or "").strip()
     if len(text) < 3 or text[:1] in PREFIXES:
         return
     relevant = mentions_target(text, await target_words(bot, db, config, chat_id))
-    if not relevant and not proactive:
-        return  # только наказания: проверяем лишь сообщения про бота или создателя
     now = time.time()
     every = int(settings.get("ai_passive_every", 0))
     if not relevant and now - _passive_last.get(chat_id, 0) < every:
@@ -338,12 +410,12 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
     persona = settings.get("ai_persona", "normal")
     style = await db.get_style(message.from_user.id) if persona == "adaptive" else None
     messages = build_messages(config.ai_name, persona, history, author_name(message), text,
-                              creator=await creator_label(db, config),
+                              creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              punish=punish, passive="reply" if proactive else "silent")
+                              punish=False, passive="reply")
     try:
-        res = parse_reply(await ai.complete(messages, temperature=0.3 if punish else 1.0))
+        res = parse_reply(await ai.complete(messages))
     except AIError:
         return  # в фоне ошибки ИИ не показываем
     if proactive and not res["skip"]:
@@ -355,8 +427,6 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             answer = res["text"][:3500]
             memory.add(chat_id, config.ai_name, answer)
             await message.reply(answer, parse_mode=None)
-    if punish and res["punish"]:
-        await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
 
 
 class AIMemoryMiddleware(BaseMiddleware):
@@ -364,6 +434,15 @@ class AIMemoryMiddleware(BaseMiddleware):
 
     async def __call__(self, handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
                        event: TelegramObject, data: dict[str, Any]) -> Any:
+        if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
+                and (event.text or event.caption) and not (event.voice or event.video_note)
+                and event.from_user and not event.from_user.is_bot
+                and await data["db"].group_feature(event.chat.id, "ai")):
+            try:
+                await check_moderation(event, memory.get(event.chat.id), data)
+            except Exception:
+                log.exception("AI moderation failed chat=%s message=%s",
+                              event.chat.id, event.message_id)
         result = await handler(event, data)
         if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
                 and event.text and event.from_user and not event.from_user.is_bot):

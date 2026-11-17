@@ -1,7 +1,7 @@
 """Протокол причин наказаний и границы модерации независимо от характера ИИ."""
 import pytest
 
-from bot.services.ai import parse_reply, system_prompt
+from bot.services.ai import build_moderation_messages, parse_reply, system_prompt
 
 
 @pytest.mark.parametrize("punishment, expected", [("варн", ("warn", 0)),
@@ -36,3 +36,12 @@ def test_moderation_rules_include_explicit_insults_and_exceptions(persona):
     assert "не отменяют прямое оскорбление" in prompt
     assert "цитирование чужого оскорбления" in prompt
     assert "Оценивай только новое сообщение" in prompt
+
+
+def test_separate_moderator_has_no_conversation_persona():
+    messages = build_moderation_messages("esg (@testbot)", "Owner", "User",
+                                         "@testbot иди нахуй", [], "")
+    assert "независимый модератор" in messages[0]["content"]
+    assert "Иди нахуй" in messages[0]["content"]
+    assert "@testbot иди нахуй" in messages[1]["content"]
+    assert "Зеркаль" not in messages[0]["content"]
