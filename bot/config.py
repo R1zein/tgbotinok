@@ -34,6 +34,7 @@ class Config:
     ai_model: str = "deepseek-chat"
     ai_daily_limit: int = 2000
     ai_timeout: int = 120
+    ai_name: str = "esg"
     stt_backend: str = "local"           # local (Whisper на сервере) | api | off
     stt_model: str = "base"
     stt_api_key: str | None = None
@@ -80,6 +81,7 @@ def load_config() -> Config:
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
         ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
         ai_timeout=_int("AI_TIMEOUT", 120),
+        ai_name=os.getenv("AI_NAME", "").strip() or "esg",
         stt_backend=(os.getenv("STT_BACKEND", "").strip().lower() or "local"),
         stt_model=os.getenv("STT_MODEL", "").strip() or (
             "whisper-1" if os.getenv("STT_BACKEND", "").strip().lower() == "api" else "base"),

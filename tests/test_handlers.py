@@ -1020,7 +1020,7 @@ async def test_group_ai(env, monkeypatch):
     bot_msg = msg(GROUP, BOT_ID, "Привет, я бот 🙂")
     await feed(upd(message=msg(GROUP, OTHER, "а ты умный?", reply_to=bot_msg)))
     prompt = seen[-1][1]["content"]
-    assert "в ответ на твоё сообщение" in prompt and "Bot: Привет, я бот" in prompt
+    assert "в ответ на твоё сообщение" in prompt and "esg: Привет, я бот" in prompt
 
     # обычное сообщение без упоминания — не трогаем
     clock[0] += 10
@@ -1348,7 +1348,7 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
 
     # всё выключено — ИИ на обычные сообщения не тратится
     answers = []
-    await feed_bg(upd(message=msg(GROUP, USER, "бот тупой")))
+    await feed_bg(upd(message=msg(GROUP, USER, "этот бот тупой")))
     assert replies == []
 
     # «вступает сам»: на мусор — ПРОПУСК, на вопрос к чату — отвечает
@@ -1397,7 +1397,7 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     for i in range(2):
         clock[0] += 5
         answers = ["РЕАКЦИЯ: 😡\nНАКАЗАНИЕ: варн\nПРОПУСК"]
-        await feed_bg(upd(message=msg(GROUP, OTHER, f"бот лох {i}")))
+        await feed_bg(upd(message=msg(GROUP, OTHER, f"да этот бот лох {i}")))
     assert any("Лимит предупреждений" in t for t in s.texts())
     assert await db.get_warns(GROUP, OTHER) == 0  # сброшены после наказания
 
@@ -1406,7 +1406,7 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
         clock[0] += 5
         answers = ["РЕАКЦИЯ: 🤡\nНАКАЗАНИЕ: мут 60\nПРОПУСК"]
         s.clear()
-        await feed_bg(upd(message=msg(GROUP, who, "бот глупый")))
+        await feed_bg(upd(message=msg(GROUP, who, "ну и бот глупый")))
         assert not restricts()
 
     # при прямом обращении тоже можно наказать
@@ -1416,3 +1416,35 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     await feed(upd(message=msg(GROUP, USER, "ии ты тупой")))
     assert any(t == "Сам такой." for t in s.texts())
     assert any("предупреждение" in t for t in s.texts())
+
+
+async def test_ai_called_by_bot_word_and_name(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    aih.memory._chats.clear()
+    aih._last_answer.clear()
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    seen = []
+
+    async def fake_complete(messages, **kw):
+        seen.append(messages)
+        return "РЕАКЦИЯ: нет\nЯ esg 🙂"
+    monkeypatch.setattr(dp["ai"], "complete", fake_complete)
+    clock = [1000.0]
+    monkeypatch.setattr(aih.time, "time", lambda: clock[0])
+
+    # ИИ выключен — «бот …» не перехватывается
+    await feed(upd(message=msg(GROUP, USER, "бот, как дела?")))
+    assert not seen
+    await db.set_chat_setting(GROUP, "ai", True)
+    for text, question in (("бот, как дела?", "как дела?"), ("Бот расскажи анекдот", "расскажи анекдот"),
+                           ("esg как тебя зовут", "как тебя зовут"), ("ИИ: привет", "привет")):
+        clock[0] += 10
+        await feed(upd(message=msg(GROUP, USER, text)))
+        assert question in seen[-1][1]["content"], text
+    assert "Тебя зовут esg" in seen[-1][0]["content"]
+    # слово «бот» не в начале — не прямое обращение
+    n = len(seen)
+    clock[0] += 10
+    await feed(upd(message=msg(GROUP, USER, "у меня работа бот не причём")))
+    assert len(seen) == n
