@@ -1,7 +1,8 @@
 """Протокол причин наказаний и границы модерации независимо от характера ИИ."""
 import pytest
 
-from bot.services.ai import build_moderation_messages, parse_reply, system_prompt
+from bot.services.ai import (build_moderation_messages, explicit_direct_insult,
+                             parse_reply, system_prompt)
 
 
 @pytest.mark.parametrize("punishment, expected", [("варн", ("warn", 0)),
@@ -45,3 +46,24 @@ def test_separate_moderator_has_no_conversation_persona():
     assert "Иди нахуй" in messages[0]["content"]
     assert "@testbot иди нахуй" in messages[1]["content"]
     assert "Зеркаль" not in messages[0]["content"]
+
+
+@pytest.mark.parametrize("text, reply_target, expected", [
+    ("@testbot иди нахуй", False, True),
+    ("иди нахуй @testbot", False, True),
+    ("@testbot, иди на хуй 😂 шучу", False, True),
+    ("иди нахуй", True, True),
+    ("иди нахуй", False, False),
+    ("esg ты дебил", False, True),
+    ("бот, ты тупой", False, True),
+    ("бот неправильно отвечает", False, False),
+    ('@testbot мне написали «иди нахуй»', False, False),
+    ("@testbot не говори иди нахуй", False, False),
+    ("@testbot Петя иди нахуй", False, False),
+    ("иди нахуй @other", True, False),
+    ("@testbot_extra иди нахуй", False, False),
+    ("бот не тупой", False, False),
+])
+def test_explicit_rule_requires_unambiguous_target(text, reply_target, expected):
+    assert explicit_direct_insult(text, {"@testbot", "esg", "бот"},
+                                  reply_target=reply_target) is expected

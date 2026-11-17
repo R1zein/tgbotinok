@@ -18,7 +18,7 @@ from aiogram.types import Message, TelegramObject
 from ..config import Config
 from ..db import Database
 from ..services.ai import (AIClient, AIError, ChatMemory, build_messages,
-                           build_moderation_messages, parse_reply)
+                           build_moderation_messages, explicit_direct_insult, parse_reply)
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
@@ -36,6 +36,34 @@ memory = ChatMemory()
 _last_answer: dict[int, float] = {}       # чат -> когда ИИ начал последний ответ
 _warned: dict[int, float] = {}            # чат -> когда последний раз писали «подождите»
 _recorded: set[tuple[int, int]] = set()  # вопросы, уже записанные в память обработчиком
+MODERATION_VERSION = "3"
+moderation_status: dict[int, tuple[int, str]] = {}
+
+
+def record_moderation(message: Message, status: str) -> None:
+    moderation_status[message.chat.id] = (message.message_id, status)
+    if len(moderation_status) > 256:
+        moderation_status.pop(next(iter(moderation_status)))
+
+
+def own_handle_match(text: str, username: str | None):
+    if not username:
+        return None
+    return re.search(rf"(?<![\w@])@{re.escape(username)}(?!\w)", text, re.IGNORECASE)
+
+
+def refers_to_bot(message: Message, me, config: Config) -> bool:
+    """Допуск к самостоятельному ответу: только своё имя/ник или ответ боту."""
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    if own_handle_match(text, me.username) or any(
+            e.type == "text_mention" and e.user and e.user.id == me.id for e in entities):
+        return True
+    reply = message.reply_to_message
+    if reply and reply.from_user:
+        return reply.from_user.id == me.id
+    tokens = re.findall(r"[\w]+", text.casefold())
+    return bool(config.ai_name and config.ai_name.casefold() in tokens)
 
 
 def author_name(message: Message) -> str:
@@ -56,16 +84,25 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     if not await db.group_feature(message.chat.id, "ai"):
         return False  # ИИ выключен — сообщение идёт дальше (режимы текста, RP и т.д.)
     me = await bot.me()
-    first, _, rest = text.partition(" ")
-    word = first.lower().lstrip("".join(PREFIXES)).split("@")[0].rstrip(",.!?:;")
+    parts = text.split(maxsplit=1)
+    first, rest = parts[0], parts[1] if len(parts) > 1 else ""
+    word = first.lower().lstrip("".join(PREFIXES)).rstrip(",.!?:;")
+    word, _, command_bot = word.partition("@")
+    if command_bot and command_bot != (me.username or "").lower():
+        return False
+    handle = own_handle_match(text, me.username)
+    entity_call = any(e.type == "text_mention" and e.user and e.user.id == me.id
+                      for e in message.entities or [])
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.id != me.id and not (handle or entity_call):
+        return False  # слово «бот» в чужом диалоге не является приглашением отвечать
     if word in call_words(config):
         return {"question": rest.strip(" ,:")}
-    handle = f"@{me.username}".lower() if me.username else None
-    if handle and handle in text.lower():
-        idx = text.lower().index(handle)
-        question = (text[:idx] + text[idx + len(handle):]).strip(" ,:")
+    if handle:
+        question = (text[:handle.start()] + text[handle.end():]).strip(" ,:")
         return {"question": question}
-    reply = message.reply_to_message
+    if entity_call:
+        return {"question": text}
     if reply and reply.from_user and reply.from_user.id == me.id and text[:1] not in PREFIXES:
         return {"question": text}
     return False
@@ -146,13 +183,13 @@ async def _typing(bot: Bot, message: Message) -> None:
 
 async def apply_punishment(message: Message, bot: Bot, db: Database, config: Config,
                            punish: tuple[str, int], reason: str = "",
-                           evidence: str = "") -> None:
+                           evidence: str = "") -> bool:
     """Варн или мут, которые решил выдать ИИ за оскорбление бота/создателя."""
     chat_id, user = message.chat.id, message.from_user
     if not user or user.is_bot or user.id in config.admin_ids:
-        return  # создателя не наказываем
+        return False  # создателя не наказываем
     if await is_chat_admin(bot, chat_id, user.id):
-        return  # админов Telegram ограничить не даст — и не пытаемся
+        return False  # админов Telegram ограничить не даст — и не пытаемся
     who = mention(user.id, user.full_name)
     kind, minutes = punish
     reason = reason.strip()
@@ -167,13 +204,12 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
             await do_mute(bot, chat_id, user.id, minutes * 60)
             await message.reply(f"🔇 {who} заглушен(а) на {minutes} мин.{details}",
                                 reply_markup=undo_kb("unmute", user.id, "🔊 Размутить"))
-            return
+            return True
         settings = await db.get_chat_settings(chat_id)
         limit = int(settings.get("warn_limit", 3))
         count = await db.add_warn(chat_id, user.id)
         text = f"⚠️ {who} получает предупреждение ({count}/{limit}).{details}"
         if count >= limit:
-            await db.reset_warns(chat_id, user.id)
             action = settings.get("warn_action", "mute")
             if action == "ban":
                 await do_ban(bot, chat_id, user.id, None)
@@ -184,12 +220,16 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
             else:
                 await do_mute(bot, chat_id, user.id, 86400)
                 text += "\n🔇 Лимит предупреждений — мут на сутки."
+            await db.reset_warns(chat_id, user.id)
             await message.reply(text)
         else:
             await message.reply(text, reply_markup=undo_kb("unwarn", user.id, "➖ Снять варн"))
+        return True
     except TelegramBadRequest as e:
         log.info("ИИ не смог наказать %s: %s", user.id, e)
-        await message.reply("⚠️ Хотел наказать, но у меня нет прав администратора на это.")
+        await message.reply(f"⚠️ Не удалось применить наказание: {esc(e.message)}")
+        record_moderation(message, f"Ошибка Telegram: {e.message}")
+        return False
 
 
 async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
@@ -216,7 +256,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
         await check_moderation(message, memory.get(chat_id),
                                {"bot": bot, "db": db, "ai": ai, "config": config},
-                               text=memory_text, direct=True)
+                               text=raw_question, direct=True)
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
@@ -327,13 +367,15 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
                            direct: bool = False) -> None:
     """Модерация до разговорного обработчика, независимо от пауз и характера ИИ."""
     db, bot, config, ai = data["db"], data["bot"], data["config"], data.get("ai")
-    if ai is None or not config.ai_configured or not message.from_user:
+    if not message.from_user:
         return
     settings = await db.get_chat_settings(message.chat.id)
     if not settings.get("ai_punish"):
         return
     text = (text if text is not None else message.text or message.caption or "").strip()
     if not text:
+        return
+    if re.fullmatch(r"/aistatus(?:@\w+)?", text, re.IGNORECASE):
         return
     me = await bot.me()
     reply_user = message.reply_to_message.from_user if message.reply_to_message else None
@@ -350,8 +392,30 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
         return
     uid = message.from_user.id
     if uid in config.admin_ids or await is_chat_admin(bot, message.chat.id, uid):
+        record_moderation(message, "Автор — создатель или админ группы: автоматическое наказание пропущено.")
         log.info("AI moderation chat=%s message=%s: protected author %s",
                  message.chat.id, message.message_id, uid)
+        return
+    targets = call_words(config) | {"создатель", "создатель бота"}
+    targets.update(w for w in (me.first_name, f"@{me.username}" if me.username else None) if w)
+    for creator_id in config.admin_ids:
+        profile = await creator_profile(db, creator_id, message.chat.id)
+        if profile:
+            targets.update(w for w in (profile["first_name"],
+                           f"@{profile['username']}" if profile["username"] else None) if w)
+    targets.update(r["alias"] for r in await db.list_nicks(message.chat.id)
+                   if r["user_id"] in config.admin_ids)
+    for entity in entities:
+        if entity.type == "text_mention" and entity.user and entity.user.id in protected:
+            targets.add(entity.extract_from(message.text or message.caption or ""))
+    if explicit_direct_insult(text, targets, reply_target=reply_target or direct):
+        reason = "Прямое адресное оскорбление бота или его создателя."
+        applied = await apply_punishment(message, bot, db, config, ("warn", 0), reason, text)
+        if applied:
+            record_moderation(message, "Выдан варн по правилу прямого оскорбления.")
+        return
+    if ai is None or not config.ai_configured:
+        record_moderation(message, "Ключ ИИ не настроен; доступны только точные правила оскорблений.")
         return
     context = ""
     if reply_user:
@@ -373,13 +437,18 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
     try:
         res = parse_reply(await ai.complete(messages, max_tokens=250, temperature=0))
     except AIError as e:
+        record_moderation(message, f"Ошибка ИИ: {e}")
         log.warning("AI moderation chat=%s message=%s failed: %s",
                     message.chat.id, message.message_id, e)
         return
     log.info("AI moderation chat=%s message=%s decision=%s",
              message.chat.id, message.message_id, res["punish"])
     if res["punish"]:
-        await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
+        applied = await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
+        if applied:
+            record_moderation(message, f"Применено решение ИИ: {res['punish'][0]}.")
+    else:
+        record_moderation(message, "ИИ не назначил наказание (либо не вернул строку НАКАЗАНИЕ).")
 
 
 async def passive_check(message: Message, history: list[tuple[str, str]],
@@ -399,11 +468,12 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
     text = (message.text or "").strip()
     if len(text) < 3 or text[:1] in PREFIXES:
         return
-    relevant = mentions_target(text, await target_words(bot, db, config, chat_id))
+    if not refers_to_bot(message, await bot.me(), config):
+        return  # ИИ не получает посторонние сообщения, даже если мог бы на них ответить
     now = time.time()
     every = int(settings.get("ai_passive_every", 0))
-    if not relevant and now - _passive_last.get(chat_id, 0) < every:
-        return  # сообщения про бота/создателя проверяем всегда
+    if now - _passive_last.get(chat_id, 0) < every:
+        return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
     _passive_last[chat_id] = now
 
     people, author_names = await group_people(db, chat_id, message.from_user.id)
@@ -441,6 +511,7 @@ class AIMemoryMiddleware(BaseMiddleware):
             try:
                 await check_moderation(event, memory.get(event.chat.id), data)
             except Exception:
+                record_moderation(event, "Ошибка обработки модерации; подробности в журнале сервера.")
                 log.exception("AI moderation failed chat=%s message=%s",
                               event.chat.id, event.message_id)
         result = await handler(event, data)

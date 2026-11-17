@@ -1,3 +1,4 @@
+import re
 import time
 
 from aiogram import Bot, F, Router
@@ -154,6 +155,52 @@ async def do_kick(bot: Bot, chat_id: int, user_id: int) -> None:
     await bot.unban_chat_member(chat_id, user_id, only_if_banned=True)
 
 
+async def admin_request(message: Message, bot: Bot, config: Config) -> bool | dict:
+    """Просьба модерации с явным глаголом, адресованная боту; права проверяет prepare."""
+    text = (message.text or "").strip()
+    if not text:
+        return False
+    me = await bot.me()
+    names = {"бот", "bot", "ии", config.ai_name}
+    if me.username:
+        names.add(f"@{me.username}")
+    address = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True) if n)
+    called = re.match(rf"^(?:{address})[\s,:!]+", text, re.IGNORECASE)
+    reply = message.reply_to_message
+    if called:
+        text = text[called.end():]
+    elif not (reply and reply.from_user and reply.from_user.id == me.id):
+        return False
+    text = re.sub(r"^пожалуйста[\s,]+", "", text, flags=re.IGNORECASE)
+    request = re.match(
+        r"^(?:(?:дай|выдай|выпиши|поставь)\s+(?:(?:ему|ей)\s+)?"
+        r"(?P<kind>варн|предупреждение|мут)|(?P<mute>замуть|замути)|"
+        r"(?P<warn>предупреди))\b\s*(?P<args>.*)$", text, re.IGNORECASE)
+    if not request:
+        return False
+    action = "mute" if request.group("mute") or (request.group("kind") or "").lower() == "мут" else "warn"
+    args = re.sub(r"^(?:ему|ей|его|её|ее)\b\s*", "", request.group("args"), flags=re.IGNORECASE)
+    units = {"с": "s", "м": "m", "ч": "h", "д": "d"}
+
+    def compact_duration(match):
+        return match.group(1) + units[match.group(2)[0].lower()]
+
+    if action == "mute":
+        args = re.sub(r"\bна\s+(\d+)\s+(секунд[ауы]?|минут[ауы]?|час(?:а|ов)?|день|дня|дней)\b",
+                      compact_duration, args, count=1, flags=re.IGNORECASE)
+    return {"request_action": action, "args": args}
+
+
+@router.message(admin_request)
+async def cmd_admin_request(message: Message, bot: Bot, db: Database, config: Config,
+                            request_action: str, args: str):
+    # Действия выполняются теми же функциями, что /warn и /mute, а не текстом ИИ.
+    if request_action == "warn":
+        await cmd_warn(message, bot, db, config, args)
+    else:
+        await cmd_mute(message, bot, db, config, args)
+
+
 @router.message(Cmd("mute", "мут", "замутить", "заткнуть"))
 async def cmd_mute(message: Message, bot: Bot, db: Database, config: Config, args: str):
     target = await prepare(message, bot, db, config, args, "mute")
@@ -233,7 +280,6 @@ async def cmd_warn(message: Message, bot: Bot, db: Database, config: Config, arg
     count = await db.add_warn(message.chat.id, target.id)
     text = f"⚠️ {target.link} получает предупреждение ({count}/{limit}).{reason_line(target.rest)}"
     if count >= limit:
-        await db.reset_warns(message.chat.id, target.id)
         action = settings["warn_action"]
         try:
             if action == "ban":
@@ -245,6 +291,7 @@ async def cmd_warn(message: Message, bot: Bot, db: Database, config: Config, arg
             else:
                 await do_mute(bot, message.chat.id, target.id, 86400)
                 text += "\n🔇 Лимит предупреждений — мут на сутки."
+            await db.reset_warns(message.chat.id, target.id)
         except TelegramBadRequest as e:
             text += f"\n❌ Не удалось наказать: {esc(e.message)}"
     await message.answer(text, reply_markup=undo_kb("unwarn", target.id, "➖ Снять варн")

@@ -1351,28 +1351,28 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     await feed_bg(upd(message=msg(GROUP, USER, "этот бот тупой")))
     assert replies == []
 
-    # «вступает сам»: на мусор — ПРОПУСК, на вопрос к чату — отвечает
+    # «вступает сам»: посторонние сообщения не отправляются ИИ вообще
     await db.set_chat_setting(GROUP, "ai_proactive", True)
     answers = ["РЕАКЦИЯ: нет\nНАКАЗАНИЕ: нет\nПРОПУСК"]
     s.clear()
     await feed_bg(upd(message=msg(GROUP, USER, "ну и ладно")))
-    assert len(replies) == 1 and "адресовано не тебе" in replies[-1][0]["content"]
+    assert len(replies) == 0
     assert not sent()
     clock[0] += 20
     answers = ["РЕАКЦИЯ: 🤔\nНАКАЗАНИЕ: нет\nПитон, конечно 🙂"]
-    await feed_bg(upd(message=msg(GROUP, OTHER, "какой язык учить новичку?")))
+    await feed_bg(upd(message=msg(GROUP, OTHER, "интересно, esg знает питон?")))
     assert sent()[-1].text == "Питон, конечно 🙂"
     # по умолчанию ИИ читает каждое сообщение
     answers = ["РЕАКЦИЯ: нет\nНАКАЗАНИЕ: нет\nПРОПУСК"]
     n = len(replies)
-    await feed_bg(upd(message=msg(GROUP, OTHER, "а ещё что посоветуешь")))
+    await feed_bg(upd(message=msg(GROUP, OTHER, "а esg ещё что знает")))
     assert len(replies) == n + 1
     # частоту можно ограничить: 0 → 5 → 15 сек; тогда следующее сразу — не оцениваем
     for expected in (5, 15):
         await feed(cb(ADMIN, "gs:ai_passive_every", msg(GROUP, BOT_ID, "⚙️")))
         assert (await db.get_chat_settings(GROUP))["ai_passive_every"] == expected
     n = len(replies)
-    await feed_bg(upd(message=msg(GROUP, OTHER, "и ещё вопрос")))
+    await feed_bg(upd(message=msg(GROUP, OTHER, "и ещё вопрос про esg")))
     assert len(replies) == n
     await db.set_chat_setting(GROUP, "ai_passive_every", 0)
 
@@ -1413,13 +1413,12 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
 
     # при прямом обращении тоже можно наказать
     clock[0] += 10
-    answers = ["НАКАЗАНИЕ: варн\nПРИЧИНА: нет",
-               "РЕАКЦИЯ: 🗿\nСам такой."]
+    answers = ["РЕАКЦИЯ: 🗿\nСам такой."]
     s.clear()
     await feed(upd(message=msg(GROUP, USER, "ии ты тупой")))
     assert any(t == "Сам такой." for t in s.texts())
     assert any("предупреждение" in t for t in s.texts())
-    assert any("📝 Причина: Адресное оскорбление" in t for t in s.texts())
+    assert any("📝 Причина: Прямое адресное оскорбление" in t for t in s.texts())
 
 
 @pytest.mark.parametrize("text, reply_id, caption", [
@@ -1458,12 +1457,9 @@ async def test_ai_moderates_during_cooldown(env, monkeypatch, text, reply_id, ca
                    else msg(GROUP, USER, text, reply_to=reply))
         await feed(upd(message=message))
         await asyncio.gather(*list(aih._bg_tasks))
-    assert len(seen) == 2  # пауза ответов и чтения чата не отключает модерацию
+    assert len(seen) == 0  # точное правило выдаёт варн без решения ИИ
     assert await db.get_warns(GROUP, USER) == 2  # ровно один варн на сообщение
-    assert all(kw["temperature"] == 0 for _, kw in seen)
-    assert "Admin (@admin)" in seen[0][0][0]["content"]
-    if reply_id == ADMIN:
-        assert "создателю бота" in seen[0][0][1]["content"]
+    assert "Выдан варн по правилу" in aih.moderation_status[GROUP][1]
 
 
 async def test_ai_text_mention_creator_and_muting(env, monkeypatch):
@@ -1482,7 +1478,7 @@ async def test_ai_text_mention_creator_and_muting(env, monkeypatch):
 
     monkeypatch.setattr(dp["ai"], "complete", complete)
     s.clear()
-    await feed(upd(message=msg(GROUP, USER, "он иди нахуй", entities=[
+    await feed(upd(message=msg(GROUP, USER, "он мерзкая железка", entities=[
         {"type": "text_mention", "offset": 0, "length": 2, "user": user(ADMIN)},
     ])))
     await asyncio.gather(*list(aih._bg_tasks))
@@ -1515,6 +1511,136 @@ async def test_ai_conversation_cannot_issue_second_punishment(env, monkeypatch):
     await asyncio.gather(*list(aih._bg_tasks))
     assert len(seen) == 2
     assert await db.get_warns(GROUP, USER) == 0
+
+
+@pytest.mark.parametrize("request_text, use_reply, action, seconds", [
+    ("бот, выдай варн @user за флуд", False, "warn", None),
+    ("@testbot дай предупреждение @user за оскорбление", False, "warn", None),
+    ("esg выпиши ему варн за флуд", True, "warn", None),
+    ("бот, поставь варн за флуд", True, "warn", None),
+    ("бот, замути @user на 10 минут за флуд", False, "mute", 600),
+    ("бот дай мут @user 2h за флуд", False, "mute", 7200),
+    ("бот, пожалуйста замуть его на 1 час", True, "mute", 3600),
+])
+async def test_natural_admin_requests(env, request_text, use_reply, action, seconds):
+    """Настоящие функции модерации, без вызовов ИИ и без включения ИИ в группе."""
+    dp, bot, s, db, feed = env
+    target = msg(GROUP, USER, "привет")
+    await feed(upd(message=target))
+    s.clear()
+    before = int(time.time())
+    await feed(upd(message=msg(GROUP, ADMIN, request_text, reply_to=target if use_reply else None)))
+    if action == "warn":
+        assert await db.get_warns(GROUP, USER) == 1
+        assert any("предупреждение" in t and "Причина:" in t for t in s.texts())
+    else:
+        restrictions = [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+        assert len(restrictions) == 1 and restrictions[0].user_id == USER
+        expiry = restrictions[0].until_date
+        expiry = int(expiry.timestamp()) if hasattr(expiry, "timestamp") else expiry
+        assert before + seconds <= expiry <= int(time.time()) + seconds
+
+
+@pytest.mark.parametrize("request_text", ["бот дай варн @user за флуд",
+                                     "бот замути @user на 10 минут"])
+async def test_natural_request_denied_for_regular_member(env, request_text):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    s.clear()
+    await feed(upd(message=msg(GROUP, OTHER, request_text)))
+    assert await db.get_warns(GROUP, USER) == 0
+    assert "RestrictChatMember" not in s.names()
+    assert any("Нужны права администратора" in t for t in s.texts())
+
+
+@pytest.mark.parametrize("text, reply_id", [
+    ("какой язык учить новичку?", None),
+    ("ахаха", None),
+    ("у меня работа бот не причём", None),
+    ("@testbot_extra как дела", None),
+    ("бот@otherbot привет", None),
+    ("создатель молодец", None),
+    ("esg ты это видел?", OTHER),
+    ("бот как дела", OTHER),
+])
+async def test_proactive_ignores_unrelated_conversations(env, monkeypatch, text, reply_id):
+    import dataclasses
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    dp["config"] = dataclasses.replace(dp["config"], ai_api_key="test")
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_proactive", True)
+    seen = []
+
+    async def complete(messages, **kw):
+        seen.append(messages)
+        return "РЕАКЦИЯ: 🤣\nОчень хочется вмешаться!"
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    s.clear()
+    reply = msg(GROUP, reply_id, "привет") if reply_id else None
+    await feed(upd(message=msg(GROUP, USER, text, reply_to=reply)))
+    await asyncio.gather(*list(aih._bg_tasks))
+    assert not seen
+    assert not [c for c in s.calls if type(c).__name__ == "SendMessage"]
+
+
+async def test_auto_warn_without_ai_key_and_status(env):
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    # Настроенного ключа нет. Прямое правило работает до любого запроса к API.
+    target = msg(GROUP, USER, "иди нахуй", reply_to=msg(GROUP, ADMIN, "текст"))
+    await feed(upd(message=target))
+    assert await db.get_warns(GROUP, USER) == 1
+    last = aih.moderation_status[GROUP]
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, "/aistatus", reply_to=target)))
+    assert aih.moderation_status[GROUP] == last
+    assert any("Диагностика модерации v3" in t and "Выдан варн по правилу" in t for t in s.texts())
+
+
+async def test_warns_survive_failed_limit_punishment(env, monkeypatch):
+    from aiogram.exceptions import TelegramBadRequest
+    import bot.handlers.ai as aih
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.set_chat_setting(GROUP, "ai", True)
+    await db.set_chat_setting(GROUP, "ai_punish", True)
+    original = s.make_request
+
+    async def deny_restriction(bot, method, timeout=None):
+        if type(method).__name__ == "RestrictChatMember":
+            raise TelegramBadRequest(method=method, message="not enough rights to restrict")
+        return await original(bot, method, timeout)
+
+    monkeypatch.setattr(s, "make_request", deny_restriction)
+    for _ in range(3):
+        await feed(upd(message=msg(GROUP, USER, "иди нахуй",
+                                  reply_to=msg(GROUP, ADMIN, "текст"))))
+    assert await db.get_warns(GROUP, USER) == 3
+    assert "not enough rights" in aih.moderation_status[GROUP][1]
+    assert any("Не удалось применить наказание" in t for t in s.texts())
+
+
+async def test_admin_request_still_protects_creator(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, ADMIN, "привет")))
+    await feed(upd(message=msg(GROUP, ADMIN2, "бот выдай варн @admin за флуд")))
+    assert await db.get_warns(GROUP, ADMIN) == 0
+    assert any("создателю" in t or "создателя" in t for t in s.texts())
+
+
+async def test_admin_quoted_request_does_not_execute(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, 'бот, он сказал «выдай варн @user»')))
+    assert await db.get_warns(GROUP, USER) == 0
+    assert "RestrictChatMember" not in s.names()
 
 
 async def test_ai_called_by_bot_word_and_name(env, monkeypatch):

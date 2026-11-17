@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections import deque
 
 import aiohttp
@@ -94,6 +95,31 @@ def parse_punishment(raw: str) -> tuple[str, int] | None:
     return None
 
 
+def explicit_direct_insult(text: str, targets: set[str], *, reply_target: bool = False) -> bool:
+    """Только короткое однозначное оскорбление адресата, без свободного поиска мата.
+
+    Цитаты, отрицания, жалобы и фразы с другим адресатом не совпадут целиком.
+    Остальные случаи по-прежнему оценивает ИИ.
+    """
+    def normalize(value: str) -> str:
+        return unicodedata.normalize("NFKC", value).casefold().replace("ё", "е").strip()
+
+    text = normalize(text)
+    names = sorted({normalize(t) for t in targets if t}, key=len, reverse=True)
+    if not names:
+        return False
+    target = "(?:" + "|".join(re.escape(t) for t in names) + ")"
+    separator = r"[\s,!:;.\-—]+"
+    insult = (r"(?:(?:иди|пошел|пошла|пошли)\s+(?:на\s*хуй|нахер|на\s+хер)|"
+              r"(?:ты\s+)?(?:дебил|идиот|уебок|мудак|долбоеб|тупой|тупая))")
+    # Смайлик или «шучу» после прямого оскорбления не меняют адресата.
+    ending = r"[\s!?.,…😂🤣🙂😊😉]*(?:(?:ахаха|хаха|шучу)[\s!?.,…😂🤣🙂😊😉]*)?"
+    addressed = rf"(?:[/!.]?{target}{separator}(?:ты\s+)?{insult}|{insult}{separator}{target})"
+    if re.fullmatch(addressed + ending, text):
+        return True
+    return reply_target and bool(re.fullmatch(insult + ending, text))
+
+
 def parse_reply(answer: str) -> dict:
     """Служебные строки (РЕАКЦИЯ, НАКАЗАНИЕ, ПРИЧИНА), затем текст.
     Возвращает reaction, punish, reason, text, skip; skip — модель решила не отвечать."""
@@ -157,9 +183,11 @@ def system_prompt(bot_name: str, persona: str, creator: str | None = None,
         )
     if passive == "reply":
         text += (
-            " Это сообщение адресовано не тебе — ты просто читаешь чат. Вмешивайся редко: только "
-            "если вопрос к чату, на который ты можешь полезно ответить, речь идёт о тебе, или есть "
-            "повод для очень удачной шутки. В остальных случаях вместо ответа напиши ровно "
+            " Это сообщение адресовано не тебе напрямую — ты читаешь чат. Отвечай только если "
+            "новое сообщение явно относится именно к тебе: тебя называют по имени/нику или "
+            "обсуждают твои действия. Не отвечай на общие вопросы чату, чужой диалог, реплики "
+            "о другом боте или только из-за подходящей шутки. Не ищи повод ответить в старой "
+            "истории, если новое сообщение не о тебе. В остальных случаях напиши ровно "
             f"«{SKIP_WORD}». Со следующей строки после служебных — ответ или «{SKIP_WORD}»."
         )
     elif passive == "silent":

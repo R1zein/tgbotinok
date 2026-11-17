@@ -3,11 +3,13 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ..db import Database
+from ..config import Config
 from ..features import GROUP_TOGGLES
 from ..services.ai import PERSONAS
-from .ai import COOLDOWNS, PASSIVE_CHOICES
+from .ai import COOLDOWNS, PASSIVE_CHOICES, MODERATION_VERSION, moderation_status
 from .reactions import CHANCES
 from ..utils.filters import Cmd
+from ..utils.text import esc
 from ..utils.perms import is_chat_admin, message_from_admin
 
 router = Router(name="group_settings")
@@ -71,6 +73,35 @@ async def cmd_settings(message: Message, bot: Bot, db: Database):
     if not await message_from_admin(message, bot):
         return await message.reply("⛔ Настройки доступны только администраторам.")
     await message.answer("⚙️ <b>Ассистент групп — настройки</b>", reply_markup=await settings_kb(db, message.chat.id))
+
+
+@router.message(Command("aistatus"))
+async def cmd_ai_status(message: Message, bot: Bot, db: Database, config: Config):
+    if not await message_from_admin(message, bot):
+        return await message.reply("⛔ Диагностика доступна только администраторам.")
+    settings = await db.get_chat_settings(message.chat.id)
+    me = await bot.me()
+    can_mute = await is_chat_admin(bot, message.chat.id, me.id, need_restrict=True)
+    enabled = lambda value: "✅" if value else "❌"
+    text = (f"🤖 Диагностика модерации v{MODERATION_VERSION}\n"
+            f"{enabled(db.feature_enabled('ai'))} ИИ включён глобально\n"
+            f"{enabled(settings.get('ai'))} ИИ включён в группе\n"
+            f"{enabled(settings.get('ai_punish'))} Автонаказания включены\n"
+            f"{enabled(config.ai_configured)} Ключ ИИ настроен\n"
+            f"{enabled(can_mute)} Есть права для мута\n"
+            "Создатели и админы группы освобождены от автонаказаний.\n"
+            "Явные прямые оскорбления проверяются правилами; остальные — ИИ.")
+    reply = message.reply_to_message
+    if reply and reply.from_user:
+        exempt = (reply.from_user.id in config.admin_ids
+                  or await is_chat_admin(bot, message.chat.id, reply.from_user.id))
+        text += f"\nАвтор сообщения в ответе: {'защищён от автонаказаний' if exempt else 'обычный участник'}."
+    last = moderation_status.get(message.chat.id)
+    if last:
+        text += f"\nПоследняя проверка, сообщение {last[0]}: {esc(last[1])}"
+    else:
+        text += "\nПосле запуска проверок ещё не было."
+    await message.reply(text)
 
 
 @router.callback_query(F.data.startswith("gs:"))
