@@ -991,7 +991,7 @@ async def test_group_ai(env, monkeypatch):
 
     seen = []
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, **kw):
         seen.append(messages)
         return "Привет, я бот 🙂"
     monkeypatch.setattr(ai, "complete", fake_complete)
@@ -1126,7 +1126,7 @@ async def test_ai_answers_voice(env, monkeypatch):
         return "сколько будет два плюс два"
     seen = []
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, **kw):
         seen.append(messages)
         return "Четыре!"
     monkeypatch.setattr(aih, "fetch_audio", fake_fetch)
@@ -1383,13 +1383,15 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     await feed_bg(upd(message=msg(GROUP, USER, "я на работе устал")))  # не про бота — не проверяем
     assert len(replies) == n
     clock[0] += 5
-    answers = ["РЕАКЦИЯ: 🤡\nНАКАЗАНИЕ: мут 30\nПРОПУСК"]
+    answers = ["РЕАКЦИЯ: 🤡\nНАКАЗАНИЕ: мут 30\nПРИЧИНА: Бота назвали <тупой железкой>.\nПРОПУСК"]
     s.clear()
     await feed_bg(upd(message=msg(GROUP, USER, "этот бот тупая железка")))
     assert "НАКАЗАНИЕ" in replies[-1][0]["content"]
     r = restricts()
     assert r and r[-1].user_id == USER
     assert any("заглушен(а) на 30 мин" in t for t in s.texts())
+    assert any("📝 Причина: Бота назвали &lt;тупой железкой&gt;." in t for t in s.texts())
+    assert any("<blockquote>этот бот тупая железка</blockquote>" in t for t in s.texts())
     assert not [t for t in s.texts() if "ПРОПУСК" in t]  # молчит, только наказание
 
     # варны с лимитом из настроек
@@ -1416,6 +1418,7 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
     await feed(upd(message=msg(GROUP, USER, "ии ты тупой")))
     assert any(t == "Сам такой." for t in s.texts())
     assert any("предупреждение" in t for t in s.texts())
+    assert any("📝 Причина: Адресное оскорбление" in t for t in s.texts())
 
 
 async def test_ai_called_by_bot_word_and_name(env, monkeypatch):

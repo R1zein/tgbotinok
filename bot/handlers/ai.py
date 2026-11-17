@@ -21,7 +21,7 @@ from ..services.ai import AIClient, AIError, ChatMemory, build_messages, parse_r
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
-from ..utils.text import mention
+from ..utils.text import esc, mention
 from .moderation import do_ban, do_kick, do_mute, undo_kb
 from .reactions import react
 
@@ -132,7 +132,8 @@ async def _typing(bot: Bot, message: Message) -> None:
 
 
 async def apply_punishment(message: Message, bot: Bot, db: Database, config: Config,
-                           punish: tuple[str, int]) -> None:
+                           punish: tuple[str, int], reason: str = "",
+                           evidence: str = "") -> None:
     """Варн или мут, которые решил выдать ИИ за оскорбление бота/создателя."""
     chat_id, user = message.chat.id, message.from_user
     if not user or user.is_bot or user.id in config.admin_ids:
@@ -141,16 +142,23 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
         return  # админов Telegram ограничить не даст — и не пытаемся
     who = mention(user.id, user.full_name)
     kind, minutes = punish
+    reason = reason.strip()
+    if not reason or reason.lower() in {"нет", "none", "-"}:
+        reason = "Адресное оскорбление бота или его создателя."
+    details = f"\n📝 Причина: {esc(reason[:300])}"
+    source = evidence or message.text or message.caption or ""
+    if source:
+        details += f"\n💬 Сообщение: <blockquote>{esc(source[:500])}</blockquote>"
     try:
         if kind == "mute":
             await do_mute(bot, chat_id, user.id, minutes * 60)
-            await message.reply(f"🔇 {who} заглушен(а) на {minutes} мин за оскорбление.",
+            await message.reply(f"🔇 {who} заглушен(а) на {minutes} мин.{details}",
                                 reply_markup=undo_kb("unmute", user.id, "🔊 Размутить"))
             return
         settings = await db.get_chat_settings(chat_id)
         limit = int(settings.get("warn_limit", 3))
         count = await db.add_warn(chat_id, user.id)
-        text = f"⚠️ {who} получает предупреждение ({count}/{limit}) за оскорбление."
+        text = f"⚠️ {who} получает предупреждение ({count}/{limit}).{details}"
         if count >= limit:
             await db.reset_warns(chat_id, user.id)
             action = settings.get("warn_action", "mute")
@@ -199,7 +207,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     _recorded.add((chat_id, message.message_id))
     await _typing(bot, message)
     try:
-        answer = await ai.complete(messages)
+        answer = await ai.complete(messages, temperature=0.3 if punish else 1.0)
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
@@ -210,7 +218,8 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     memory.add(chat_id, config.ai_name, answer)
     await message.reply(answer, parse_mode=None)
     if punish and res["punish"]:
-        await apply_punishment(message, bot, db, config, res["punish"])
+        await apply_punishment(message, bot, db, config, res["punish"],
+                               res["reason"], memory_text)
 
 
 @router.message(ai_trigger)
@@ -334,7 +343,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                               people=people, author_names=author_names, author_style=style,
                               punish=punish, passive="reply" if proactive else "silent")
     try:
-        res = parse_reply(await ai.complete(messages))
+        res = parse_reply(await ai.complete(messages, temperature=0.3 if punish else 1.0))
     except AIError:
         return  # в фоне ошибки ИИ не показываем
     if proactive and not res["skip"]:
@@ -347,7 +356,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             memory.add(chat_id, config.ai_name, answer)
             await message.reply(answer, parse_mode=None)
     if punish and res["punish"]:
-        await apply_punishment(message, bot, db, config, res["punish"])
+        await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
 
 
 class AIMemoryMiddleware(BaseMiddleware):

@@ -132,7 +132,7 @@ def until(secs: int | None) -> int | None:
 
 
 def reason_line(reason: str) -> str:
-    return f"\n📝 Причина: {esc(reason)}" if reason else ""
+    return f"\n📝 Причина: {esc(reason.strip()[:1000]) if reason.strip() else 'Не указана администратором.'}"
 
 
 def undo_kb(action: str, user_id: int, label: str) -> InlineKeyboardMarkup:
