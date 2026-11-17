@@ -1276,3 +1276,38 @@ async def test_admin_say_to_group(env):
     s.clear()
     await feed(cb(USER, "adm:say", msg(USER, BOT_ID, "x")))
     assert not [c for c in s.calls if type(c).__name__ == "EditMessageText"]
+
+
+async def test_ai_adaptive_persona(env, monkeypatch):
+    dp, bot, s, db, feed = env
+    import bot.handlers.ai as aih
+    aih.memory._chats.clear()
+    aih._last_answer.clear()
+    await feed(upd(message=msg(GROUP, USER, "йоу")))
+    await db.set_chat_setting(GROUP, "ai", True)
+    # режим переключается кнопкой: обычный → дерзкий → милый → краткий → адаптивный
+    for _ in range(4):
+        await feed(cb(ADMIN, "gs:ai_persona", msg(GROUP, BOT_ID, "⚙️")))
+    assert (await db.get_chat_settings(GROUP))["ai_persona"] == "adaptive"
+
+    seen = []
+
+    async def fake_complete(messages, **kw):
+        seen.append(messages)
+        return "РЕАКЦИЯ: нет\nну ты и выдал лол"
+    monkeypatch.setattr(dp["ai"], "complete", fake_complete)
+
+    # бот запоминает, как пишет человек (только в группах с адаптивным режимом)
+    for t in ("чё как пацаны))", "го катку лол", "/help", "ок"):
+        await feed(upd(message=msg(GROUP, USER, t)))
+    assert await db.get_style(USER) == ["чё как пацаны))", "го катку лол"]
+    await feed(upd(message=msg(GROUP, USER, "ии ты кто такой вообще")))
+    sys_text = seen[-1][0]["content"]
+    assert "Зеркаль манеру общения" in sys_text and "жёстко" in sys_text
+    assert "- чё как пацаны))" in sys_text and "- ты кто такой вообще" in sys_text
+    assert await db.get_style(USER) == ["чё как пацаны))", "го катку лол", "ты кто такой вообще"]
+
+    # в другом режиме стиль не копируется и новые сообщения не запоминаются
+    await db.set_chat_setting(GROUP, "ai_persona", "normal")
+    await feed(upd(message=msg(GROUP, USER, "новое сообщение")))
+    assert len(await db.get_style(USER)) == 3

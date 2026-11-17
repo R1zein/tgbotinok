@@ -18,7 +18,14 @@ PERSONAS = {
                            "оскорблений."),
     "sweet": ("🥰 Милый", "Отвечай очень мило и ласково, с уменьшительными словами и эмодзи."),
     "short": ("⚡ Краткий", "Отвечай максимально коротко — одной-двумя фразами."),
+    "adaptive": ("🦎 Адаптивный", (
+        "Зеркаль манеру общения собеседника: его лексику, сленг, длину сообщений, эмодзи, регистр "
+        "и пунктуацию (пишет коротко и строчными — и ты так же; много эмодзи — и ты). Если он "
+        "матерится — можешь тоже, в меру. При этом ты дерзкий: подкалывай жёстко и остроумно, "
+        "на подколы отвечай ещё острее, не прогибайся и не извиняйся за дерзость. Граница: "
+        "никаких оскорблений по национальности, полу, внешности, здоровью и никаких угроз.")),
 }
+STYLE_SAMPLES = 15   # сколько сообщений человека помним для адаптивного режима
 MEMORY = 30          # сколько последних сообщений чата помним для контекста
 MAX_TOKENS = 400     # потолок длины ответа
 ATTEMPTS = 3         # попыток на один вопрос при сбоях сети/сервера
@@ -108,12 +115,17 @@ def build_messages(bot_name: str, persona: str, history: list[tuple[str, str]],
                    author: str, question: str, creator: str | None = None,
                    author_is_creator: bool = False,
                    people: list[tuple[str, list[str]]] | None = None,
-                   author_names: list[str] | None = None) -> list[dict]:
+                   author_names: list[str] | None = None,
+                   author_style: list[str] | None = None) -> list[dict]:
     lines = "\n".join(f"{a}: {t}" for a, t in history[-MEMORY:])
     user = (f"Последние сообщения чата:\n{lines}\n\n" if lines else "")
     called = f" (в группе его зовут: {', '.join(author_names)})" if author_names else ""
     user += f"Сейчас тебе пишет {author}{called}: {question}\nОтветь ему."
     system = system_prompt(bot_name, persona, creator, author_is_creator) + people_note(people or [])
+    if persona == "adaptive" and author_style:
+        examples = "\n".join(f"- {t}" for t in author_style[-STYLE_SAMPLES:])
+        system += (f"\n\nТак обычно пишет {author} — скопируй этот стиль в ответе ему:\n"
+                   f"{examples}")
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 

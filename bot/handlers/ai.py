@@ -55,6 +55,14 @@ async def ai_trigger(message: Message, bot: Bot) -> bool | dict:
     return False
 
 
+async def remember_style(db: Database, user_id: int, text: str | None) -> None:
+    """Запоминаем, как пишет человек (для адаптивного режима). Команды и пустое не берём."""
+    text = (text or "").strip()
+    if len(text) < 3 or text[:1] in PREFIXES or text.startswith("[голосовое]"):
+        return
+    await db.add_style_sample(user_id, text)
+
+
 async def group_people(db: Database, chat_id: int,
                        author_id: int) -> tuple[list[tuple[str, list[str]]], list[str]]:
     """Имена из настроек автоотметок: [(«Имя (@ник)», [имена])] и имена автора вопроса."""
@@ -112,16 +120,21 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                    question: str, memory_text: str) -> None:
     chat_id = message.chat.id
     persona = (await db.get_chat_settings(chat_id)).get("ai_persona", "normal")
+    raw_question = question
     me = await bot.me()
     reply = message.reply_to_message
     if reply and reply.from_user and reply.from_user.id == me.id and reply.text:
         question = f"(в ответ на твоё сообщение «{reply.text[:300]}») {question}"
     people, author_names = await group_people(db, chat_id, message.from_user.id)
+    style = None
+    if persona == "adaptive":
+        await remember_style(db, message.from_user.id, raw_question)
+        style = await db.get_style(message.from_user.id)
     messages = build_messages(me.first_name or "бот", persona, memory.get(chat_id),
                               author_name(message), question,
                               creator=await creator_label(db, config),
                               author_is_creator=message.from_user.id in config.admin_ids,
-                              people=people, author_names=author_names)
+                              people=people, author_names=author_names, author_style=style)
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
@@ -201,6 +214,9 @@ class AIMemoryMiddleware(BaseMiddleware):
                     _recorded.discard((event.chat.id, event.message_id))
                 elif await data["db"].group_feature(event.chat.id, "ai"):
                     memory.add(event.chat.id, author_name(event), event.text)
+                    settings = await data["db"].get_chat_settings(event.chat.id)
+                    if settings.get("ai_persona") == "adaptive":
+                        await remember_style(data["db"], event.from_user.id, event.text)
             except Exception:  # noqa: BLE001
                 pass
         return result

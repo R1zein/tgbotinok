@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS group_nicks(
     chat_id INTEGER, user_id INTEGER, alias TEXT,
     PRIMARY KEY(chat_id, alias)
 );
+CREATE TABLE IF NOT EXISTS user_style(
+    user_id INTEGER PRIMARY KEY, samples TEXT NOT NULL DEFAULT '[]', updated_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS marriages(
     chat_id INTEGER, user1 INTEGER, user2 INTEGER, since INTEGER,
     PRIMARY KEY(chat_id, user1, user2)
@@ -375,6 +378,20 @@ class Database:
             "SELECT n.user_id, n.alias, m.first_name, m.username FROM group_nicks n "
             "LEFT JOIN chat_members m ON m.chat_id=n.chat_id AND m.user_id=n.user_id "
             "WHERE n.chat_id=? ORDER BY n.user_id, n.alias", (chat_id,)
+        )
+
+    # ---------- стиль общения (адаптивный режим ИИ) ----------
+    async def get_style(self, user_id: int) -> list[str]:
+        raw = await self.scalar("SELECT samples FROM user_style WHERE user_id=?", (user_id,))
+        return json.loads(raw) if raw else []
+
+    async def add_style_sample(self, user_id: int, text: str, keep: int = 15) -> None:
+        samples = (await self.get_style(user_id) + [text[:200]])[-keep:]
+        await self.execute(
+            "INSERT INTO user_style(user_id, samples, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET samples=excluded.samples, "
+            "updated_at=excluded.updated_at",
+            (user_id, json.dumps(samples, ensure_ascii=False), now()),
         )
 
     async def top_balances(self, chat_id: int, limit: int = 10) -> list[aiosqlite.Row]:
