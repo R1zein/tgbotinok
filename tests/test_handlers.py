@@ -1245,3 +1245,34 @@ async def test_ai_reacts_by_emotion(env, monkeypatch):
     s.clear()
     await feed(upd(message=msg(GROUP, OTHER, "обычное сообщение")))
     assert not reacts() and picked[-1] == "обычное сообщение"  # ИИ сказал «нет» — без реакции
+
+
+async def test_admin_say_to_group(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет всем")))  # группа попадает в базу
+    await db.execute("UPDATE chats SET title='Group' WHERE id=?", (GROUP,))
+    await feed(upd(message=msg(ADMIN, ADMIN, "/admin")))
+    m = msg(ADMIN, BOT_ID, "x")
+    s.clear()
+    await feed(cb(ADMIN, "adm:say", m))
+    edit = [c for c in s.calls if type(c).__name__ == "EditMessageText"][-1]
+    buttons = [b.callback_data for row in edit.reply_markup.inline_keyboard for b in row]
+    assert f"adm:sg:{GROUP}" in buttons
+
+    await feed(cb(ADMIN, f"adm:sg:{GROUP}", m))
+    s.clear()
+    await feed(upd(message=msg(ADMIN, ADMIN, "Всем привет от бота!")))
+    copy = [c for c in s.calls if type(c).__name__ == "CopyMessage"]
+    assert copy and copy[-1].chat_id == GROUP and copy[-1].from_chat_id == ADMIN
+    assert any("Отправлено" in t for t in s.texts())
+
+    # «Готово» выходит из режима — следующее сообщение уже никуда не уходит
+    await feed(cb(ADMIN, "adm:main", m))
+    s.clear()
+    await feed(upd(message=msg(ADMIN, ADMIN, "это уже не в группу")))
+    assert not [c for c in s.calls if type(c).__name__ == "CopyMessage"]
+
+    # не-админу недоступно
+    s.clear()
+    await feed(cb(USER, "adm:say", msg(USER, BOT_ID, "x")))
+    assert not [c for c in s.calls if type(c).__name__ == "EditMessageText"]

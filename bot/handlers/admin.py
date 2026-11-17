@@ -20,6 +20,7 @@ _tasks: set[asyncio.Task] = set()  # держим ссылки на фоновы
 
 class AdminStates(StatesGroup):
     broadcast = State()
+    say = State()
     ban = State()
     unban = State()
 
@@ -34,6 +35,7 @@ def admin_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="⚙️ Функции", callback_data="adm:feat")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm:bc"),
          InlineKeyboardButton(text="🤖 Юзербот", callback_data="adm:ub")],
+        [InlineKeyboardButton(text="✍️ Написать в группу от бота", callback_data="adm:say")],
         [InlineKeyboardButton(text="🚫 Заблокировать", callback_data="adm:ban"),
          InlineKeyboardButton(text="♻️ Разблокировать", callback_data="adm:unban")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
@@ -52,8 +54,8 @@ async def cmd_admin(message: Message, config: Config, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("adm:"))
-async def cb_admin(call: CallbackQuery, db: Database, config: Config, userbot: Userbot,
-                   state: FSMContext):
+async def cb_admin(call: CallbackQuery, bot: Bot, db: Database, config: Config,
+                   userbot: Userbot, state: FSMContext):
     if not is_admin(call.from_user.id, config):
         return await call.answer("Нет доступа", show_alert=True)
     action = call.data[4:]
@@ -98,10 +100,72 @@ async def cb_admin(call: CallbackQuery, db: Database, config: Config, userbot: U
         await call.message.edit_text("📢 Отправьте сообщение для рассылки (текст, фото, видео — "
                                      "что угодно). Оно будет скопировано всем пользователям.",
                                      reply_markup=BACK)
+    elif action == "say":
+        await call.answer("Ищу группы…")
+        groups = await shared_groups(bot, db, call.from_user.id)
+        if not groups:
+            return await call.message.edit_text(
+                "✍️ Нет групп, где есть и бот, и вы.", reply_markup=BACK)
+        rows = [[InlineKeyboardButton(text=f"👥 {title}"[:60], callback_data=f"adm:sg:{cid}")]
+                for cid, title in groups]
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm:main")])
+        return await call.message.edit_text(
+            "✍️ <b>Написать от лица бота</b>\nВыберите группу (показаны те, где есть и бот, "
+            "и вы):", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    elif action.startswith("sg:"):
+        chat_id = int(action[3:])
+        if not await both_in_chat(bot, chat_id, call.from_user.id):
+            return await call.answer("Вас или бота уже нет в этой группе", show_alert=True)
+        title = await db.scalar("SELECT title FROM chats WHERE id=?", (chat_id,)) or str(chat_id)
+        await state.set_state(AdminStates.say)
+        await state.update_data(say_chat=chat_id, say_title=title)
+        await call.message.edit_text(
+            f"✍️ Пишите — всё, что отправите сюда, бот опубликует в «{title}» от своего имени: "
+            "текст, фото, видео, стикеры, голосовые.\nКогда закончите — нажмите «Готово».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Готово", callback_data="adm:main")]]))
     elif action in ("ban", "unban"):
         await state.set_state(AdminStates.ban if action == "ban" else AdminStates.unban)
         await call.message.edit_text("Отправьте ID пользователя.", reply_markup=BACK)
     await call.answer()
+
+
+MEMBER_STATUSES = ("creator", "administrator", "member", "restricted")
+
+
+async def both_in_chat(bot: Bot, chat_id: int, user_id: int) -> bool:
+    """И бот, и пользователь сейчас состоят в группе."""
+    try:
+        me = await bot.me()
+        bot_member = await bot.get_chat_member(chat_id, me.id)
+        user_member = await bot.get_chat_member(chat_id, user_id)
+    except Exception:  # noqa: BLE001 — бота выгнали, группа удалена и т.п.
+        return False
+    return bot_member.status in MEMBER_STATUSES and user_member.status in MEMBER_STATUSES
+
+
+async def shared_groups(bot: Bot, db: Database, user_id: int) -> list[tuple[int, str]]:
+    rows = await db.fetchall(
+        "SELECT id, title FROM chats WHERE active=1 AND type IN ('group','supergroup') "
+        "ORDER BY title LIMIT 60")
+    checks = await asyncio.gather(*(both_in_chat(bot, r["id"], user_id) for r in rows))
+    return [(r["id"], r["title"] or str(r["id"])) for r, ok in zip(rows, checks) if ok]
+
+
+@router.message(AdminStates.say, F.chat.type == "private")
+async def on_say(message: Message, config: Config, state: FSMContext):
+    if not is_admin(message.from_user.id, config):
+        return
+    data = await state.get_data()
+    try:
+        await message.copy_to(data["say_chat"])
+    except Exception as e:  # noqa: BLE001
+        log.info("Сообщение в группу не отправлено: %s", e)
+        return await message.reply("❌ Не получилось отправить — возможно, у бота нет прав писать "
+                                   "в этой группе.")
+    await message.reply(f"✅ Отправлено в «{data['say_title']}». Можно писать ещё.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="✅ Готово", callback_data="adm:main")]]))
 
 
 @router.message(AdminStates.broadcast, F.chat.type == "private")
