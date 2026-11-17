@@ -14,6 +14,7 @@ from aiogram.types import (
 from ..config import Config
 from ..db import Database
 from ..utils.filters import Cmd
+from ..utils.morph import alias_key, norm
 from ..utils.perms import is_chat_admin, message_from_admin
 from ..utils.text import esc, mention
 from ..utils.timeparse import for_duration, parse_duration
@@ -44,6 +45,42 @@ class Target:
         return mention(self.id, self.name)
 
 
+class AmbiguousTarget(ValueError):
+    """Одно имя с учётом падежей соответствует нескольким участникам."""
+
+
+async def resolve_saved_name(db: Database, chat_id: int, args: str) -> Target | None:
+    """Имена из автоотметок; самое длинное совпадение в начале аргументов."""
+    tokens = list(re.finditer(r"\S+", args))
+    candidates: dict[int, Target] = {}
+    longest = 0
+    matched_name = ""
+    for row in await db.list_nicks(chat_id):
+        size = len(row["alias"].split())
+        if not size or size > len(tokens) or size < longest:
+            continue
+        end = tokens[size - 1].end()
+        name = args[:end].strip().rstrip(",:;")
+        exact = norm(name) == norm(row["alias"])
+        # Не превращаем «Паша123» в «Паша», отбрасывая цифры при морфологическом разборе.
+        inflected = (bool(re.fullmatch(r"[a-zа-яё]+(?:[\s-]+[a-zа-яё]+)*", name, re.IGNORECASE))
+                     and alias_key(name) == alias_key(row["alias"]))
+        if not (exact or inflected):
+            continue
+        if size > longest:
+            candidates.clear()
+            longest = size
+            matched_name = name
+        candidates[row["user_id"]] = Target(
+            row["user_id"], row["first_name"] or row["username"] or row["alias"],
+            args[end:].strip())
+    if len(candidates) > 1:
+        raise AmbiguousTarget(
+            f"Имя «{matched_name}» подходит нескольким участникам. "
+            "Укажите @юзернейм / ID или ответьте на сообщение нужного человека.")
+    return next(iter(candidates.values()), None)
+
+
 async def resolve_target(message: Message, bot: Bot, db: Database, args: str) -> Target | None:
     reply = message.reply_to_message
     if reply and not reply.forum_topic_created and reply.from_user and not reply.from_user.is_bot:
@@ -64,7 +101,7 @@ async def resolve_target(message: Message, bot: Bot, db: Database, args: str) ->
             return Target(uid, member.user.full_name, rest)
         except TelegramBadRequest:
             return Target(uid, str(uid), rest)
-    return None
+    return await resolve_saved_name(db, message.chat.id, args.strip())
 
 
 def split_duration(rest: str) -> tuple[int | None, str]:
@@ -110,9 +147,14 @@ async def prepare(message: Message, bot: Bot, db: Database, config: Config, args
     if not await message_from_admin(message, bot, need_restrict=True):
         await message.reply("⛔ Нужны права администратора с возможностью блокировки.")
         return None
-    target = await resolve_target(message, bot, db, args)
+    try:
+        target = await resolve_target(message, bot, db, args)
+    except AmbiguousTarget as e:
+        await message.reply(f"⚠️ {esc(str(e))}")
+        return None
     if target is None:
-        await message.reply("Ответьте на сообщение пользователя или укажите @юзернейм / ID.")
+        await message.reply("Ответьте на сообщение пользователя или укажите @юзернейм / ID "
+                            "либо имя, сохранённое для автоотметок.")
         return None
     me = await bot.me()
     if target.id == me.id:
@@ -320,8 +362,14 @@ async def cmd_unwarn_ru(message: Message, bot: Bot, db: Database, config: Config
 async def cmd_warns(message: Message, bot: Bot, db: Database, config: Config, args: str):
     if not await db.group_feature(message.chat.id, "moderation"):
         return
-    target = await resolve_target(message, bot, db, args)
+    try:
+        target = await resolve_target(message, bot, db, args)
+    except AmbiguousTarget as e:
+        return await message.reply(f"⚠️ {esc(str(e))}")
     if target is None:
+        if args.strip():
+            return await message.reply("Не нашёл участника. Укажите запомненное имя, @юзернейм / ID "
+                                       "или ответьте на его сообщение.")
         u = message.from_user
         target = Target(u.id, u.full_name, "")
     settings = await db.get_chat_settings(message.chat.id)

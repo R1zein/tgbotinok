@@ -220,6 +220,93 @@ async def test_moderation(env):
     assert s.names().count("BanChatMember") == 1 and "UnbanChatMember" in s.names()
 
 
+@pytest.mark.parametrize("command, action", [
+    ("мут Пашу 10m флуд", "mute"),
+    ("бот, замути Пашу на 10 минут за флуд", "mute"),
+    ("бот, выдай варн Паше за флуд", "warn"),
+    ("варн ПАШЕ флуд", "warn"),
+    ("размут Паши", "unmute"),
+])
+async def test_moderation_uses_saved_names(env, command, action):
+    dp, bot, s, db, feed = env
+    target = msg(GROUP, USER, "привет")
+    await feed(upd(message=target))
+    await db.set_chat_setting(GROUP, "nicks", True)
+    await feed(upd(message=msg(GROUP, ADMIN, "ник паша", reply_to=target)))
+    assert any(r["alias"] == "паша" for r in await db.list_nicks(GROUP))
+    # Сохранённое имя работает и когда сами автоотметки выключены.
+    await db.set_chat_setting(GROUP, "nicks", False)
+    s.clear()
+    await feed(upd(message=msg(GROUP, ADMIN, command)))
+    if action == "warn":
+        assert await db.get_warns(GROUP, USER) == 1
+        assert any("предупреждение" in t and "флуд" in t for t in s.texts())
+    else:
+        restrictions = [c for c in s.calls if type(c).__name__ == "RestrictChatMember"]
+        assert len(restrictions) == 1 and restrictions[0].user_id == USER
+        assert restrictions[0].permissions.can_send_messages is (action == "unmute")
+        if action == "mute":
+            assert any("на 10 мин" in t and "флуд" in t for t in s.texts())
+
+
+async def test_saved_name_ambiguity_never_punishes(env):
+    dp, bot, s, db, feed = env
+    for uid in (USER, OTHER):
+        await feed(upd(message=msg(GROUP, uid, "привет")))
+    await db.add_nick(GROUP, USER, "паша")
+    await db.add_nick(GROUP, OTHER, "пашу")
+    for command in ("бот замути Паше на 10 минут", "варн Паше", "варны Паше"):
+        s.clear()
+        await feed(upd(message=msg(GROUP, ADMIN, command)))
+        assert "RestrictChatMember" not in s.names()
+        assert await db.get_warns(GROUP, USER) == 0
+        assert await db.get_warns(GROUP, OTHER) == 0
+        assert any("нескольким участникам" in t for t in s.texts())
+
+
+async def test_longest_saved_name_wins_and_preserves_reason(env):
+    dp, bot, s, db, feed = env
+    for uid in (USER, OTHER):
+        await feed(upd(message=msg(GROUP, uid, "привет")))
+    await db.add_nick(GROUP, USER, "паша")
+    await db.add_nick(GROUP, OTHER, "паша петрович")
+    await feed(upd(message=msg(GROUP, ADMIN, "бот выдай варн Пашу Петровича за флуд")))
+    assert await db.get_warns(GROUP, USER) == 0
+    assert await db.get_warns(GROUP, OTHER) == 1
+    assert any("Причина: за флуд" in t for t in s.texts())
+
+
+@pytest.mark.parametrize("name", ["Паша123", "Незнакомец"])
+async def test_unknown_name_does_not_punish(env, name):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.add_nick(GROUP, USER, "паша")
+    await feed(upd(message=msg(GROUP, ADMIN, f"бот замути {name} на 10 минут")))
+    assert "RestrictChatMember" not in s.names()
+    assert any("имя, сохранённое для автоотметок" in t for t in s.texts())
+
+
+async def test_names_respect_chat_and_admin_permissions(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, USER, "привет")))
+    await db.add_nick(GROUP - 1, USER, "паша")
+    await feed(upd(message=msg(GROUP, ADMIN, "варн паша флуд")))
+    assert await db.get_warns(GROUP, USER) == 0
+    await db.add_nick(GROUP, USER, "паша")
+    await feed(upd(message=msg(GROUP, OTHER, "бот выдай варн Паше за флуд")))
+    assert await db.get_warns(GROUP, USER) == 0
+    assert any("Нужны права администратора" in t for t in s.texts())
+
+
+async def test_name_alias_still_protects_creator(env):
+    dp, bot, s, db, feed = env
+    await feed(upd(message=msg(GROUP, ADMIN, "привет")))
+    await db.add_nick(GROUP, ADMIN, "егор")
+    await feed(upd(message=msg(GROUP, ADMIN2, "бот выдай варн Егору за флуд")))
+    assert await db.get_warns(GROUP, ADMIN) == 0
+    assert any("создателю" in t or "создателя" in t for t in s.texts())
+
+
 async def test_settings_and_call(env):
     dp, bot, s, db, feed = env
     for uid in (USER, OTHER):
