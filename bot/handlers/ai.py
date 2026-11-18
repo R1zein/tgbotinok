@@ -114,12 +114,12 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     return False
 
 
-async def remember_style(db: Database, user_id: int, text: str | None) -> None:
+async def remember_style(db: Database, message: Message, text: str | None) -> None:
     """Запоминаем, как пишет человек (для адаптивного режима). Команды и пустое не берём."""
     text = (text or "").strip()
-    if len(text) < 3 or text[:1] in PREFIXES or text.startswith("[голосовое]"):
+    if not text or text[:1] in PREFIXES:
         return
-    await db.add_style_sample(user_id, text)
+    await db.remember_member_message(message.chat.id, message.from_user.id, message.message_id, text)
 
 
 async def group_people(db: Database, chat_id: int,
@@ -255,8 +255,8 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     people, author_names = await group_people(db, chat_id, message.from_user.id)
     style = None
     if persona == "adaptive":
-        await remember_style(db, message.from_user.id, raw_question)
-        style = await db.get_style(message.from_user.id)
+        await remember_style(db, message, raw_question)
+        style = await db.member_history(chat_id, message.from_user.id, message.message_id)
     messages = build_messages(config.ai_name, persona, memory.get(chat_id),
                               author_name(message), question,
                               creator=await creator_label(db, config, chat_id),
@@ -505,7 +505,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
 
     people, author_names = await group_people(db, chat_id, message.from_user.id)
     persona = settings.get("ai_persona", "normal")
-    style = await db.get_style(message.from_user.id) if persona == "adaptive" else None
+    style = await db.member_history(chat_id, message.from_user.id, message.message_id) if persona == "adaptive" else None
     messages = build_messages(config.ai_name, persona, history, author_name(message), text,
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
@@ -557,7 +557,7 @@ class AIMemoryMiddleware(BaseMiddleware):
                     memory.add(event.chat.id, author_name(event), event.text)
                     settings = await data["db"].get_chat_settings(event.chat.id)
                     if settings.get("ai_persona") == "adaptive":
-                        await remember_style(data["db"], event.from_user.id, event.text)
+                        await remember_style(data["db"], event, event.text)
             except Exception:  # noqa: BLE001
                 pass
         return result

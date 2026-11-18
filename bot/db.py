@@ -48,6 +48,21 @@ CREATE TABLE IF NOT EXISTS group_nicks(
     chat_id INTEGER, user_id INTEGER, alias TEXT,
     PRIMARY KEY(chat_id, alias)
 );
+CREATE TABLE IF NOT EXISTS member_context(
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    PRIMARY KEY(chat_id, user_id, message_id)
+);
+CREATE TRIGGER IF NOT EXISTS trim_member_context AFTER INSERT ON member_context
+BEGIN
+    DELETE FROM member_context
+    WHERE chat_id=NEW.chat_id AND user_id=NEW.user_id AND message_id <= (
+        SELECT message_id FROM member_context WHERE chat_id=NEW.chat_id AND user_id=NEW.user_id
+        ORDER BY message_id DESC LIMIT 1 OFFSET 40
+    );
+END;
 CREATE TABLE IF NOT EXISTS user_style(
     user_id INTEGER PRIMARY KEY, samples TEXT NOT NULL DEFAULT '[]', updated_at INTEGER
 );
@@ -381,6 +396,19 @@ class Database:
         )
 
     # ---------- стиль общения (адаптивный режим ИИ) ----------
+    async def remember_member_message(self, chat_id: int, user_id: int, message_id: int, text: str) -> None:
+        await self.execute(
+            "INSERT OR IGNORE INTO member_context(chat_id,user_id,message_id,text) VALUES(?,?,?,?)",
+            (chat_id, user_id, message_id, text[:500]),
+        )
+
+    async def member_history(self, chat_id: int, user_id: int, before: int) -> list[str]:
+        rows = await self.fetchall(
+            "SELECT text FROM member_context WHERE chat_id=? AND user_id=? AND message_id<? "
+            "ORDER BY message_id", (chat_id, user_id, before),
+        )
+        return [row["text"] for row in rows]
+
     async def get_style(self, user_id: int) -> list[str]:
         raw = await self.scalar("SELECT samples FROM user_style WHERE user_id=?", (user_id,))
         return json.loads(raw) if raw else []
