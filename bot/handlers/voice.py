@@ -7,6 +7,7 @@
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 
+from .ai import remember_transcript
 from ..db import Database
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import Cmd
@@ -22,11 +23,12 @@ def transcript_text(text: str) -> str:
     return f"🗣 <i>{esc(text[:3900])}</i>"
 
 
-async def transcribe_to(placeholder: Message, bot: Bot, stt: Transcriber, media) -> None:
+async def transcribe_to(placeholder: Message, bot: Bot, stt: Transcriber, media) -> str | None:
     file_id, name, duration = media
     try:
         text = await stt.transcribe(await fetch_audio(bot, file_id), name, duration)
         await placeholder.edit_text(transcript_text(text))
+        return text
     except STTError as e:
         await placeholder.edit_text(f"⚠️ {esc(str(e))}")
     except Exception:  # noqa: BLE001 — например, файл больше 20 МБ
@@ -41,7 +43,9 @@ async def cmd_group_stt(message: Message, bot: Bot, db: Database, stt: Transcrib
     if not media:
         return await message.reply("🗣 Ответьте этой командой на голосовое или кружок.")
     placeholder = await message.reply_to_message.reply("⏳ Расшифровываю…")
-    await transcribe_to(placeholder, bot, stt, media)
+    text = await transcribe_to(placeholder, bot, stt, media)
+    if text and await db.group_feature(message.chat.id, "ai"):
+        remember_transcript(message.reply_to_message, text)
 
 
 @router.message(F.chat.type == "private", F.voice | F.video_note | F.audio)

@@ -11,6 +11,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot, F, Router
+from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, TelegramObject
@@ -33,6 +34,16 @@ router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 COOLDOWNS = [0, 3, 5, 10, 20, 30, 60]  # варианты паузы между ответами ИИ в чате (сек)
 AI_CMDS = {"ии", "ai", "нейро", "gpt", "бот", "bot", "ботик"}
 memory = ChatMemory()
+_voice_text: dict[tuple[int, int], str] = {}
+
+
+def remember_transcript(message: Message, text: str) -> None:
+    _voice_text[(message.chat.id, message.message_id)] = text[:500]
+    if len(_voice_text) > 512:
+        _voice_text.pop(next(iter(_voice_text)))
+    memory.add(message.chat.id, author_name(message), f"[расшифровка] {text}")
+
+
 _last_answer: dict[int, float] = {}       # чат -> когда ИИ начал последний ответ
 _warned: dict[int, float] = {}            # чат -> когда последний раз писали «подождите»
 _recorded: set[tuple[int, int]] = set()  # вопросы, уже записанные в память обработчиком
@@ -77,7 +88,10 @@ def author_name(message: Message) -> str:
 def reply_context(message: Message) -> dict | None:
     reply = message.reply_to_message
     if reply and reply.from_user:
-        return {"автор": author_name(reply), "текст": (reply.text or reply.caption or "[медиа]")[:300]}
+        quoted = reply.text or reply.caption
+        if not quoted and media_of(reply):
+            quoted = _voice_text.get((reply.chat.id, reply.message_id), "[аудио без расшифровки]")
+        return {"автор": author_name(reply), "текст": (quoted or "[медиа]")[:300]}
     return None
 
 
@@ -506,6 +520,10 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
         return
     now = time.time()
     every = int(settings.get("ai_passive_every", 0))
+    if not message.reply_to_message and re.fullmatch(
+            r"(?:[азхah]+[.,! ]*)?(?:это\s+)?(?:гениально|смешно|угар|прикол)[.!😂🤣 ]*|"
+            r"[ахзha😂🤣 ]{3,}", text, re.IGNORECASE):
+        return
     if every and not refers_to_bot(message, await bot.me(), config):
         return
     if now - _passive_last.get(chat_id, 0) < every:
@@ -553,6 +571,10 @@ class AIMemoryMiddleware(BaseMiddleware):
                 record_moderation(event, "Ошибка обработки модерации; подробности в журнале сервера.")
                 log.exception("AI moderation failed chat=%s message=%s",
                               event.chat.id, event.message_id)
+        if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
+                and event.from_user and not event.from_user.is_bot and media_of(event)
+                and await data["db"].group_feature(event.chat.id, "ai")):
+            memory.add(event.chat.id, author_name(event), "[отправлено аудио или видеосообщение]")
         result = await handler(event, data)
         if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
                 and event.text and event.from_user and not event.from_user.is_bot):
@@ -561,9 +583,10 @@ class AIMemoryMiddleware(BaseMiddleware):
                     _recorded.discard((event.chat.id, event.message_id))
                 elif await data["db"].group_feature(event.chat.id, "ai"):
                     history = memory.get(event.chat.id)  # контекст до этого сообщения
-                    task = asyncio.create_task(passive_check(event, history, data))
-                    _bg_tasks.add(task)
-                    task.add_done_callback(_bg_tasks.discard)
+                    if result is UNHANDLED:
+                        task = asyncio.create_task(passive_check(event, history, data))
+                        _bg_tasks.add(task)
+                        task.add_done_callback(_bg_tasks.discard)
                     memory.add(event.chat.id, author_name(event), event.text)
                     settings = await data["db"].get_chat_settings(event.chat.id)
                     if settings.get("ai_persona") == "adaptive":
