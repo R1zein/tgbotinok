@@ -251,19 +251,27 @@ async def admin_request(message: Message, bot: Bot, config: Config) -> bool | di
     return {"request_action": action, "args": args}
 
 
+async def announce_penalty(message: Message, db: Database, uid: int, name: str,
+                           penalty: str, reason: str) -> None:
+    aliases = await db.list_nicks(message.chat.id)
+    name = next((row["alias"] for row in aliases if row["user_id"] == uid), name)
+    await message.reply(f"{mention(uid, name)}, я выдаю тебе {penalty}. "
+                        f"Причина: {esc(reason or 'по просьбе администратора')}.")
+
+
 @router.message(admin_request)
 async def cmd_admin_request(message: Message, bot: Bot, db: Database, config: Config,
                             request_action: str, args: str, ai: AIClient | None = None):
     # Действия выполняются теми же функциями, что /warn и /mute, а не текстом ИИ.
     if request_action == "warn":
-        await cmd_warn(message, bot, db, config, args, ai)
+        await cmd_warn(message, bot, db, config, args, ai, announce=True)
     else:
-        await cmd_mute(message, bot, db, config, args, ai)
+        await cmd_mute(message, bot, db, config, args, ai, announce=True)
 
 
 @router.message(Cmd("mute", "мут", "замутить", "заткнуть"))
 async def cmd_mute(message: Message, bot: Bot, db: Database, config: Config, args: str,
-                   ai: AIClient | None = None):
+                   ai: AIClient | None = None, announce: bool = False):
     target = await prepare(message, bot, db, config, args, "mute")
     if not target:
         return
@@ -275,6 +283,8 @@ async def cmd_mute(message: Message, bot: Bot, db: Database, config: Config, arg
         await do_mute(bot, message.chat.id, target.id, secs)
     except TelegramBadRequest as e:
         return await message.reply(f"❌ Не удалось: {esc(e.message)}")
+    if announce:
+        await announce_penalty(message, db, target.id, target.name, f"мут {for_duration(secs)}", reason)
     await message.answer(
         f"🔇 {target.link} заглушен(а) {for_duration(secs)}.{reason_line(reason)}",
         reply_markup=undo_kb("unmute", target.id, "🔊 Размутить"),
@@ -336,7 +346,7 @@ async def cmd_kick(message: Message, bot: Bot, db: Database, config: Config, arg
 
 @router.message(Cmd("warn", "варн", "пред", "предупреждение"))
 async def cmd_warn(message: Message, bot: Bot, db: Database, config: Config, args: str,
-                   ai: AIClient | None = None):
+                   ai: AIClient | None = None, announce: bool = False):
     target = await prepare(message, bot, db, config, args, "warn")
     if not target:
         return
@@ -344,6 +354,8 @@ async def cmd_warn(message: Message, bot: Bot, db: Database, config: Config, arg
     limit = int(settings["warn_limit"])
     reason = await requested_reason(message, target, target.rest, ai)
     count = await db.add_warn(message.chat.id, target.id)
+    if announce:
+        await announce_penalty(message, db, target.id, target.name, "варн", reason)
     text = f"⚠️ {target.link} получает предупреждение ({count}/{limit}).{reason_line(reason)}"
     if count >= limit:
         action = settings["warn_action"]

@@ -23,7 +23,7 @@ from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
 from ..utils.text import esc, mention
-from .moderation import do_ban, do_kick, do_mute, undo_kb
+from .moderation import announce_penalty, do_ban, do_kick, do_mute, undo_kb
 from .reactions import react
 
 log = logging.getLogger(__name__)
@@ -68,7 +68,10 @@ def refers_to_bot(message: Message, me, config: Config) -> bool:
 
 def author_name(message: Message) -> str:
     u = message.from_user
-    return (u.full_name or u.username or str(u.id)) if u else "кто-то"
+    if not u:
+        return "неизвестный участник"
+    handle = f", @{u.username}" if u.username else ""
+    return f"{u.full_name}{handle} [ID {u.id}]"
 
 
 def call_words(config: Config) -> set[str]:
@@ -124,6 +127,7 @@ async def group_people(db: Database, chat_id: int,
         if r["user_id"] not in by_user:
             name = r["first_name"] or (f"@{r['username']}" if r["username"] else str(r["user_id"]))
             who = f"{name} (@{r['username']})" if r["username"] and r["first_name"] else name
+            who += f" [ID {r['user_id']}]"
             by_user[r["user_id"]] = (who, [])
         by_user[r["user_id"]][1].append(r["alias"])
     author = by_user.get(author_id)
@@ -202,12 +206,14 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
     try:
         if kind == "mute":
             await do_mute(bot, chat_id, user.id, minutes * 60)
+            await announce_penalty(message, db, user.id, user.full_name, f"мут на {minutes} мин.", reason)
             await message.reply(f"🔇 {who} заглушен(а) на {minutes} мин.{details}",
                                 reply_markup=undo_kb("unmute", user.id, "🔊 Размутить"))
             return True
         settings = await db.get_chat_settings(chat_id)
         limit = int(settings.get("warn_limit", 3))
         count = await db.add_warn(chat_id, user.id)
+        await announce_penalty(message, db, user.id, user.full_name, "варн", reason)
         text = f"⚠️ {who} получает предупреждение ({count}/{limit}).{details}"
         if count >= limit:
             action = settings.get("warn_action", "mute")
@@ -221,7 +227,8 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
                 await do_mute(bot, chat_id, user.id, 86400)
                 text += "\n🔇 Лимит предупреждений — мут на сутки."
             await db.reset_warns(chat_id, user.id)
-            await message.reply(text)
+            undo = {"mute": ("unmute", "🔊 Размутить"), "ban": ("unban", "♻️ Разбанить")}.get(action)
+            await message.reply(text, reply_markup=undo_kb(undo[0], user.id, undo[1]) if undo else None)
         else:
             await message.reply(text, reply_markup=undo_kb("unwarn", user.id, "➖ Снять варн"))
         return True
@@ -238,10 +245,10 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     settings = await db.get_chat_settings(chat_id)
     persona = settings.get("ai_persona", "normal")
     raw_question = question
-    me = await bot.me()
     reply = message.reply_to_message
-    if reply and reply.from_user and reply.from_user.id == me.id and reply.text:
-        question = f"(в ответ на твоё сообщение «{reply.text[:300]}») {question}"
+    if reply and reply.from_user:
+        quoted = reply.text or reply.caption or "[медиа]"
+        question = f"(ответ участнику {author_name(reply)} на «{quoted[:300]}») {question}"
     people, author_names = await group_people(db, chat_id, message.from_user.id)
     style = None
     if persona == "adaptive":
@@ -271,7 +278,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
         await react(bot, chat_id, message.message_id, res["reaction"])
     answer = res["text"][:3500] or "🤔"
-    memory.add(chat_id, config.ai_name, answer)
+    memory.add(chat_id, f"{config.ai_name} (бот)", answer)
     await message.reply(answer, parse_mode=None)
 
 
@@ -495,7 +502,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             if res["reaction"]:
                 await react(bot, chat_id, message.message_id, res["reaction"])
             answer = res["text"][:3500]
-            memory.add(chat_id, config.ai_name, answer)
+            memory.add(chat_id, f"{config.ai_name} (бот)", answer)
             await message.reply(answer, parse_mode=None)
 
 
