@@ -97,6 +97,9 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     entity_call = any(e.type == "text_mention" and e.user and e.user.id == me.id
                       for e in message.entities or [])
     reply = message.reply_to_message
+    plain_call = text[:1] not in PREFIXES and re.search(r"(?<![\w@])бот(?![\w@])", text, re.I)
+    if plain_call:
+        return {"question": text if text.strip(" ,.!?:;").casefold() != "бот" else ""}
     if reply and reply.from_user and reply.from_user.id != me.id and not (handle or entity_call):
         return False  # слово «бот» в чужом диалоге не является приглашением отвечать
     if word in call_words(config):
@@ -290,7 +293,7 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, conf
     if not await db.group_feature(message.chat.id, "ai"):
         return
     if not question:
-        return await message.reply("🤖 Спросите что-нибудь: <code>ии как дела?</code>")
+        return await message.reply("Я здесь. Что подсказать?")
     if await _cooldown_ok(message, db):
         await _respond(message, bot, db, ai, config, question, message.text)
 
