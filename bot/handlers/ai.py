@@ -118,13 +118,16 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     entity_call = any(e.type == "text_mention" and e.user and e.user.id == me.id
                       for e in message.entities or [])
     reply = message.reply_to_message
-    plain_call = text[:1] not in PREFIXES and re.search(r"(?<![\w@])бот(?![\w@])", text, re.I)
-    if plain_call:
-        return {"question": text if text.strip(" ,.!?:;").casefold() != "бот" else ""}
     if reply and reply.from_user and reply.from_user.id != me.id and not (handle or entity_call):
-        return False  # слово «бот» в чужом диалоге не является приглашением отвечать
-    if word in call_words(config):
+        return False
+    if word in call_words(config) and word != "бот":
         return {"question": rest.strip(" ,:")}
+    if word == "бот" and text[:1] in PREFIXES:
+        return {"question": rest.strip(" ,:")}
+    if re.search(r"^(?:эй[\s,]+)?бот(?:$|[,:!?]|(?:\s+(?:как|скок|сколько|что|кто|где|"
+                 r"почему|скажи|помоги|подскажи|ты|объясни|можешь|привет)\b))|"
+                 r"(?:^|[\s,])(?:привет|эй|слушай)[\s,]+бот\b|,\s*бот[?!.]*$", text, re.I):
+        return {"question": text if text.strip(" ,.!?:;").casefold() != "бот" else ""}
     if handle:
         question = (text[:handle.start()] + text[handle.end():]).strip(" ,:")
         return {"question": question}
@@ -524,7 +527,11 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             r"(?:[азхah]+[.,! ]*)?(?:это\s+)?(?:гениально|смешно|угар|прикол)[.!😂🤣 ]*|"
             r"[ахзha😂🤣 ]{3,}", text, re.IGNORECASE):
         return
-    if every and not refers_to_bot(message, await bot.me(), config):
+    me = await bot.me()
+    reply = message.reply_to_message
+    if reply and reply.from_user and reply.from_user.id != me.id:
+        return
+    if every and not refers_to_bot(message, me, config):
         return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
@@ -540,7 +547,11 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                               reply_to=reply_context(message),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
     try:
-        res = parse_reply(await ai.complete(messages))
+        decision = (await ai.complete(messages)).strip()
+        verdict, _, body = decision.partition("\n")
+        if verdict.strip().upper() != "АДРЕСАТ: БОТ":
+            return
+        res = parse_reply(body)
     except AIError:
         return  # в фоне ошибки ИИ не показываем
     if proactive and not res["skip"]:
