@@ -74,6 +74,13 @@ def author_name(message: Message) -> str:
     return f"{u.full_name}{handle} [ID {u.id}]"
 
 
+def reply_context(message: Message) -> dict | None:
+    reply = message.reply_to_message
+    if reply and reply.from_user:
+        return {"автор": author_name(reply), "текст": (reply.text or reply.caption or "[медиа]")[:300]}
+    return None
+
+
 def call_words(config: Config) -> set[str]:
     """Слова в начале сообщения, на которые откликается ИИ: «ии», «бот», его имя (esg)…"""
     return AI_CMDS | {config.ai_name.lower()}
@@ -248,10 +255,6 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     settings = await db.get_chat_settings(chat_id)
     persona = settings.get("ai_persona", "normal")
     raw_question = question
-    reply = message.reply_to_message
-    if reply and reply.from_user:
-        quoted = reply.text or reply.caption or "[медиа]"
-        question = f"(ответ участнику {author_name(reply)} на «{quoted[:300]}») {question}"
     people, author_names = await group_people(db, chat_id, message.from_user.id)
     style = None
     if persona == "adaptive":
@@ -262,6 +265,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
+                              reply_to=reply_context(message),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
         if await check_moderation(message, memory.get(chat_id),
@@ -510,6 +514,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
+                              reply_to=reply_context(message),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
     try:
         res = parse_reply(await ai.complete(messages))
