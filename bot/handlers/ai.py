@@ -287,7 +287,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
         await react(bot, chat_id, message.message_id, res["reaction"])
     answer = res["text"][:3500] or "🤔"
-    memory.add(chat_id, f"{config.ai_name} (бот)", answer)
+    memory.add(chat_id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
     await message.reply(answer, parse_mode=None)
 
 
@@ -297,7 +297,12 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, conf
     if not await db.group_feature(message.chat.id, "ai"):
         return
     if not question:
-        return await message.reply("Я здесь. Что подсказать?")
+        answer = "Я здесь. Что подсказать?"
+        await message.reply(answer)
+        memory.add(message.chat.id, author_name(message), message.text)
+        memory.add(message.chat.id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
+        _recorded.add((message.chat.id, message.message_id))
+        return
     if await _cooldown_ok(message, db):
         await _respond(message, bot, db, ai, config, question, message.text)
 
@@ -497,12 +502,16 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
     if not proactive:
         return
     text = (message.text or "").strip()
-    if len(text) < 3 or text[:1] in PREFIXES:
+    if not text or text[:1] in PREFIXES:
         return
-    if not refers_to_bot(message, await bot.me(), config):
-        return  # ИИ не получает посторонние сообщения, даже если мог бы на них ответить
     now = time.time()
     every = int(settings.get("ai_passive_every", 0))
+    if not refers_to_bot(message, await bot.me(), config):
+        if every or message.reply_to_message or not history:
+            return
+        # Продолжение открытого диалога: предыдущая реплика бота была этому участнику.
+        if history[-1][0] != f"{config.ai_name} (бот, ответ для {author_name(message)})":
+            return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
     _passive_last[chat_id] = now
@@ -527,7 +536,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             if res["reaction"]:
                 await react(bot, chat_id, message.message_id, res["reaction"])
             answer = res["text"][:3500]
-            memory.add(chat_id, f"{config.ai_name} (бот)", answer)
+            memory.add(chat_id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
             await message.reply(answer, parse_mode=None)
 
 
