@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from ..db import Database
 from ..config import Config
 from ..features import GROUP_TOGGLES
-from ..services.ai import PERSONAS
+from ..services.ai import MOSCOW_OFFSET, PERSONAS, UTC_OFFSETS, offset_label
 from .ai import COOLDOWNS, PASSIVE_CHOICES, MODERATION_VERSION, moderation_status
 from .reactions import CHANCES
 from ..utils.filters import Cmd
@@ -21,6 +21,9 @@ WARN_ACTIONS = {"mute": "🔇 мут на сутки", "kick": "👢 кик", "b
 async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
     s = await db.get_chat_settings(chat_id)
     rows = []
+    offset = s.get("utc_offset", MOSCOW_OFFSET)
+    rows.append([InlineKeyboardButton(text=f"🕒 Часовой пояс: {offset_label(offset)}",
+                                      callback_data="gs:timezone")])
     for key, label in GROUP_TOGGLES.items():
         if not db.feature_enabled(key.replace("call_admins_only", "call")):
             continue
@@ -114,7 +117,25 @@ async def cb_settings(call: CallbackQuery, bot: Bot, db: Database):
         await call.message.delete()
         return await call.answer()
     s = await db.get_chat_settings(chat_id)
-    if key in GROUP_TOGGLES:
+    if key == "timezone":
+        selected = s.get("utc_offset", MOSCOW_OFFSET)
+        buttons = [InlineKeyboardButton(
+            text=("✓ " if offset == selected else "") + offset_label(offset)
+                 + (" МСК" if offset == MOSCOW_OFFSET else ""),
+            callback_data=f"gs:offset:{offset}") for offset in UTC_OFFSETS]
+        rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="gs:back")])
+        await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        return await call.answer()
+    if key == "back":
+        await call.message.edit_reply_markup(reply_markup=await settings_kb(db, chat_id))
+        return await call.answer()
+    if key.startswith("offset:"):
+        choices = {f"offset:{offset}": offset for offset in UTC_OFFSETS}
+        if key not in choices:
+            return await call.answer("Неизвестный часовой пояс")
+        await db.set_chat_setting(chat_id, "utc_offset", choices[key])
+    elif key in GROUP_TOGGLES:
         await db.set_chat_setting(chat_id, key, not s.get(key))
     elif key == "warn_limit":
         await db.set_chat_setting(chat_id, key, s["warn_limit"] + 1 if s["warn_limit"] < 10 else 2)

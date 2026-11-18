@@ -17,7 +17,7 @@ from aiogram.types import Message, TelegramObject
 
 from ..config import Config
 from ..db import Database
-from ..services.ai import (AIClient, AIError, ChatMemory, build_messages,
+from ..services.ai import (AIClient, AIError, ChatMemory, MOSCOW_OFFSET, build_messages,
                            build_moderation_messages, explicit_direct_insult, parse_reply)
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
@@ -259,7 +259,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              punish=False)
+                              utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
         await check_moderation(message, memory.get(chat_id),
                                {"bot": bot, "db": db, "ai": ai, "config": config},
@@ -490,7 +490,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              punish=False, passive="reply")
+                              utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
     try:
         res = parse_reply(await ai.complete(messages))
     except AIError:
