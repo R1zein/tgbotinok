@@ -529,10 +529,18 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
         return
     me = await bot.me()
     reply = message.reply_to_message
-    if reply and reply.from_user and reply.from_user.id != me.id:
+    if reply and (not reply.from_user or reply.from_user.id != me.id):
         return
-    if every and not refers_to_bot(message, me, config):
-        return
+    if not refers_to_bot(message, me, config):
+        recent_sender = f"{config.ai_name} (бот, ответ для {author_name(message)})"
+        continuing = any(sender == recent_sender for sender, _ in history[-6:])
+        if every or not continuing:
+            return
+        # Даже во время диалога короткое суждение может относиться к разговору людей.
+        if not ("?" in text or re.match(
+                r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
+                r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I)):
+            return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
     _passive_last[chat_id] = now
@@ -552,6 +560,9 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
         if verdict.strip().upper() != "АДРЕСАТ: БОТ":
             return
         res = parse_reply(body)
+        greeting = r"\b(?:доброе утро|добрый (?:день|вечер)|привет|здравствуй(?:те)?)\b"
+        if re.search(greeting, res["text"], re.I) and not re.search(greeting, text, re.I):
+            return
     except AIError:
         return  # в фоне ошибки ИИ не показываем
     if proactive and not res["skip"]:

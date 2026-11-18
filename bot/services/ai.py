@@ -232,7 +232,7 @@ def group_clock(minutes: int) -> str:
     period = ("ночь" if now.hour < 6 else "утро" if now.hour < 12 else
               "день" if now.hour < 18 else "вечер")
     return (f"Сейчас в группе {now:%d.%m.%Y %H:%M} ({offset_label(minutes)}), {period}. "
-            "Учитывай местное время в ответах и выбирай приветствие по времени суток.")
+            "Используй время, если оно относится к вопросу. Приветствуй только в ответ на приветствие.")
 
 
 def build_messages(bot_name: str, persona: str, history: list[tuple[str, str]],
