@@ -506,12 +506,8 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
         return
     now = time.time()
     every = int(settings.get("ai_passive_every", 0))
-    if not refers_to_bot(message, await bot.me(), config):
-        if every or message.reply_to_message or not history:
-            return
-        # Продолжение открытого диалога: предыдущая реплика бота была этому участнику.
-        if history[-1][0] != f"{config.ai_name} (бот, ответ для {author_name(message)})":
-            return
+    if every and not refers_to_bot(message, await bot.me(), config):
+        return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
     _passive_last[chat_id] = now
