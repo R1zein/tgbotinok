@@ -261,9 +261,11 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               people=people, author_names=author_names, author_style=style,
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
-        await check_moderation(message, memory.get(chat_id),
+        if await check_moderation(message, memory.get(chat_id),
                                {"bot": bot, "db": db, "ai": ai, "config": config},
-                               text=raw_question, direct=True)
+                               text=raw_question, direct=True):
+            memory.add(chat_id, author_name(message), memory_text)
+            return
     memory.add(chat_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
@@ -371,19 +373,19 @@ def mentions_target(text: str, words: set[str]) -> bool:
 
 async def check_moderation(message: Message, history: list[tuple[str, str]],
                            data: dict[str, Any], *, text: str | None = None,
-                           direct: bool = False) -> None:
+                           direct: bool = False) -> bool:
     """Модерация до разговорного обработчика, независимо от пауз и характера ИИ."""
     db, bot, config, ai = data["db"], data["bot"], data["config"], data.get("ai")
     if not message.from_user:
-        return
+        return False
     settings = await db.get_chat_settings(message.chat.id)
     if not settings.get("ai_punish"):
-        return
+        return False
     text = (text if text is not None else message.text or message.caption or "").strip()
     if not text:
-        return
+        return False
     if re.fullmatch(r"/aistatus(?:@\w+)?", text, re.IGNORECASE):
-        return
+        return False
     me = await bot.me()
     reply_user = message.reply_to_message.from_user if message.reply_to_message else None
     protected = config.admin_ids | {me.id}
@@ -396,34 +398,42 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
     relevant = (direct or reply_target or entity_target or mentions_target(text, words)
                 or first in call_words(config))
     if not relevant:
-        return
+        return False
     uid = message.from_user.id
     if uid in config.admin_ids or await is_chat_admin(bot, message.chat.id, uid):
         record_moderation(message, "Автор — создатель или админ группы: автоматическое наказание пропущено.")
         log.info("AI moderation chat=%s message=%s: protected author %s",
                  message.chat.id, message.message_id, uid)
-        return
-    targets = call_words(config) | {"создатель", "создатель бота"}
-    targets.update(w for w in (me.first_name, f"@{me.username}" if me.username else None) if w)
+        return False
+    creator_names = {"создатель", "создатель бота"}
+    bot_names = call_words(config)
+    bot_names.update(w for w in (me.first_name, f"@{me.username}" if me.username else None) if w)
     for creator_id in config.admin_ids:
         profile = await creator_profile(db, creator_id, message.chat.id)
         if profile:
-            targets.update(w for w in (profile["first_name"],
+            creator_names.update(w for w in (profile["first_name"],
                            f"@{profile['username']}" if profile["username"] else None) if w)
-    targets.update(r["alias"] for r in await db.list_nicks(message.chat.id)
+    creator_names.update(r["alias"] for r in await db.list_nicks(message.chat.id)
                    if r["user_id"] in config.admin_ids)
     for entity in entities:
         if entity.type == "text_mention" and entity.user and entity.user.id in protected:
-            targets.add(entity.extract_from(message.text or message.caption or ""))
-    if explicit_direct_insult(text, targets, reply_target=reply_target or direct):
-        reason = "Прямое адресное оскорбление бота или его создателя."
+            names = bot_names if entity.user.id == me.id else creator_names
+            names.add(entity.extract_from(message.text or message.caption or ""))
+    bot_hit = explicit_direct_insult(text, bot_names)
+    creator_hit = explicit_direct_insult(text, creator_names)
+    if not (bot_hit or creator_hit) and (reply_target or direct):
+        if explicit_direct_insult(text, bot_names | creator_names, reply_target=True):
+            creator_hit = bool(reply_target and reply_user.id in config.admin_ids)
+            bot_hit = not creator_hit
+    if bot_hit != creator_hit:
+        reason = "Оскорбление создателя бота." if creator_hit else "Оскорбление бота."
         applied = await apply_punishment(message, bot, db, config, ("warn", 0), reason, text)
         if applied:
             record_moderation(message, "Выдан варн по правилу прямого оскорбления.")
-        return
+        return applied
     if ai is None or not config.ai_configured:
         record_moderation(message, "Ключ ИИ не настроен; доступны только точные правила оскорблений.")
-        return
+        return False
     context = ""
     if reply_user:
         target = ("боту" if reply_user.id == me.id else "создателю бота"
@@ -442,20 +452,27 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
         await creator_label(db, config, message.chat.id), f"{author_name(message)} (ID {uid})",
         text, history, context)
     try:
-        res = parse_reply(await ai.complete(messages, max_tokens=250, temperature=0))
+        decision = await ai.complete(messages, max_tokens=250, temperature=0)
+        target_line, _, details = decision.strip().partition("\n")
+        reasons = {"АДРЕСАТ: бот": "Оскорбление бота.",
+                   "АДРЕСАТ: создатель": "Оскорбление создателя бота."}
+        reason = reasons.get(target_line.strip())
+        res = parse_reply(details)
     except AIError as e:
         record_moderation(message, f"Ошибка ИИ: {e}")
         log.warning("AI moderation chat=%s message=%s failed: %s",
                     message.chat.id, message.message_id, e)
-        return
+        return False
     log.info("AI moderation chat=%s message=%s decision=%s",
              message.chat.id, message.message_id, res["punish"])
-    if res["punish"]:
-        applied = await apply_punishment(message, bot, db, config, res["punish"], res["reason"], text)
+    if res["punish"] and reason:
+        applied = await apply_punishment(message, bot, db, config, res["punish"], reason, text)
         if applied:
             record_moderation(message, f"Применено решение ИИ: {res['punish'][0]}.")
+        return applied
     else:
         record_moderation(message, "ИИ не назначил наказание (либо не вернул строку НАКАЗАНИЕ).")
+    return False
 
 
 async def passive_check(message: Message, history: list[tuple[str, str]],
@@ -516,7 +533,9 @@ class AIMemoryMiddleware(BaseMiddleware):
                 and event.from_user and not event.from_user.is_bot
                 and await data["db"].group_feature(event.chat.id, "ai")):
             try:
-                await check_moderation(event, memory.get(event.chat.id), data)
+                if await check_moderation(event, memory.get(event.chat.id), data):
+                    memory.add(event.chat.id, author_name(event), event.text or event.caption)
+                    return
             except Exception:
                 record_moderation(event, "Ошибка обработки модерации; подробности в журнале сервера.")
                 log.exception("AI moderation failed chat=%s message=%s",

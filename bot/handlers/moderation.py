@@ -256,7 +256,7 @@ async def announce_penalty(message: Message, db: Database, uid: int, name: str,
     aliases = await db.list_nicks(message.chat.id)
     name = next((row["alias"] for row in aliases if row["user_id"] == uid), name)
     await message.reply(f"{mention(uid, name)}, я выдаю тебе {penalty}. "
-                        f"Причина: {esc(reason or 'по просьбе администратора')}.")
+                        f"Причина: {esc((reason or 'по просьбе администратора').rstrip('.'))}.")
 
 
 @router.message(admin_request)
