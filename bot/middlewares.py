@@ -7,6 +7,20 @@ from .config import Config
 from .db import Database
 
 
+REFUSED_USER_ID = 5395604971
+REFUSAL = "Я отказываюсь отвечать на ваши запросы."
+
+
+class RefuseMatchedRequest(BaseMiddleware):
+    """Фильтры группы уже распознали запрос к одному из обработчиков."""
+
+    async def __call__(self, handler, event: Message, data):
+        if event.from_user and event.from_user.id == REFUSED_USER_ID:
+            await event.reply(REFUSAL)
+            return
+        return await handler(event, data)
+
+
 class TrackMiddleware(BaseMiddleware):
     """Запоминает пользователей/участников групп и отсекает заблокированных в боте."""
 
@@ -24,6 +38,11 @@ class TrackMiddleware(BaseMiddleware):
         user = getattr(event, "from_user", None)
         if isinstance(event, Message) and event.business_connection_id:
             return await handler(event, data)  # бизнес-чаты обрабатываются отдельно
+        if user and user.id == REFUSED_USER_ID:
+            if isinstance(event, CallbackQuery):
+                return await event.answer(REFUSAL, show_alert=True)
+            if isinstance(event, Message) and event.chat.type == "private":
+                return await event.reply(REFUSAL)
         if user and not user.is_bot:
             if user.id not in self.config.admin_ids and await self.db.is_banned(user.id):
                 if isinstance(event, CallbackQuery):

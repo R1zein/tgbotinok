@@ -17,7 +17,7 @@ from .handlers.nicks import NickMentionMiddleware
 from .handlers.reactions import AutoReactionMiddleware
 from .services.ai import AIClient
 from .services.stt import Transcriber
-from .middlewares import TrackMiddleware
+from .middlewares import RefuseMatchedRequest, TrackMiddleware
 from .services.gifts import GiftWatcher
 from .services.resale import ResaleWatcher
 from .services.userbot import Userbot
@@ -93,6 +93,7 @@ async def main() -> None:
     stt = Transcriber(config)
     dp["stt"] = stt
     track = TrackMiddleware(db, config)
+    dp.message.middleware(RefuseMatchedRequest())
     dp.message.outer_middleware(track)
     dp.callback_query.outer_middleware(track)
     dp.message.outer_middleware(NickMentionMiddleware())

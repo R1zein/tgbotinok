@@ -16,6 +16,7 @@ from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, TelegramObject
 
+from ..middlewares import REFUSED_USER_ID, REFUSAL
 from ..config import Config
 from ..db import Database
 from ..services.ai import (AIClient, AIError, ChatMemory, MOSCOW_OFFSET, build_messages,
@@ -541,6 +542,9 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                 r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
                 r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I)):
             return
+    if message.from_user.id == REFUSED_USER_ID:
+        await message.reply(REFUSAL)
+        return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
     _passive_last[chat_id] = now
