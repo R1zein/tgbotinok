@@ -8,6 +8,8 @@ import aiosqlite
 from .features import GLOBAL_FEATURES, GROUP_DEFAULTS, USER_DEFAULTS
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS ai_ignore(user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL);
+INSERT OR IGNORE INTO ai_ignore VALUES(5395604971, 1);
 CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY,
     username TEXT,
@@ -225,6 +227,13 @@ class Database:
             "first_name=excluded.first_name, started=MAX(users.started, excluded.started)",
             (user_id, username, first_name, int(started), now()),
         )
+
+    async def ai_ignored(self, user_id: int) -> bool:
+        return bool(await self.scalar("SELECT enabled FROM ai_ignore WHERE user_id=?", (user_id,)))
+
+    async def set_ai_ignore(self, user_id: int, enabled: bool) -> None:
+        await self.execute("INSERT INTO ai_ignore VALUES(?,?) ON CONFLICT(user_id) "
+                           "DO UPDATE SET enabled=excluded.enabled", (user_id, int(enabled)))
 
     async def is_banned(self, user_id: int) -> bool:
         return bool(await self.scalar("SELECT is_banned FROM users WHERE id=?", (user_id,)))

@@ -342,21 +342,26 @@ class AIClient:
         return clean_emoji(answer.split()[0] if answer.split() else "")
 
     async def complete(self, messages: list[dict], max_tokens: int | None = None,
-                       temperature: float = 1.0) -> str:
+                       temperature: float = 1.0, *, model: str | None = None) -> str:
         if not self.config.ai_configured:
             raise AIError("ИИ не настроен: администратор бота не добавил ключ API.")
         if not self.budget_left():
             raise AIError("На сегодня лимит ИИ-ответов исчерпан, попробуйте завтра.")
         self._used += 1
         status, data = None, None
+        payload = {"model": model or self.config.ai_model, "messages": messages}
+        limit = max_tokens or self.config.ai_chat_tokens
+        if self.config.ai_base_url.rstrip("/") == "https://api.openai.com/v1":
+            payload["max_completion_tokens"] = limit
+        else:
+            payload.update(max_tokens=limit, temperature=temperature)
         for attempt in range(1, ATTEMPTS + 1):
             session = await self._http()
             try:
                 async with session.post(
                     f"{self.config.ai_base_url.rstrip('/')}/chat/completions",
                     headers={"Authorization": f"Bearer {self.config.ai_api_key}"},
-                    json={"model": self.config.ai_model, "messages": messages,
-                          "max_tokens": max_tokens or self.config.ai_chat_tokens, "temperature": temperature},
+                    json=payload,
                 ) as resp:
                     status = resp.status
                     data = await resp.json(content_type=None)

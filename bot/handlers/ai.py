@@ -15,7 +15,6 @@ from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, TelegramObject
 
-from ..middlewares import REFUSED_USER_ID, REFUSAL
 from ..config import Config
 from ..db import Database
 from ..services.ai import (AIClient, AIError, MOSCOW_OFFSET, build_messages,
@@ -291,7 +290,8 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     try:
         if coding:
             messages[0]["content"] += " Режим программирования: подробно разбери задачу и приведи полный код, когда он нужен. Можно использовать блоки кода."
-            answer = await ai.complete(messages, max_tokens=config.ai_code_tokens)
+            options = {"model": config.ai_code_model} if config.ai_code_model else {}
+            answer = await ai.complete(messages, max_tokens=config.ai_code_tokens, **options)
         else:
             answer = await ai.complete(messages)
     except AIError as e:
@@ -547,8 +547,7 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
                 r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
                 r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I)):
             return
-    if message.from_user.id == REFUSED_USER_ID:
-        await message.reply(REFUSAL)
+    if await db.ai_ignored(message.from_user.id):
         return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно

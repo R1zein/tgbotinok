@@ -52,14 +52,11 @@ async def collect_members(bot: Bot, db: Database, userbot: Userbot,
     return members, full
 
 
-@router.message(Cmd("call", "калл", "колл", "everyone", "все", "всех"))
+@router.message(Cmd("call", "калл", "колл", "everyone"))
+@router.message(Cmd("все", "всех", allow_bare=False))
 async def cmd_call(message: Message, bot: Bot, db: Database, userbot: Userbot, args: str):
     chat_id = message.chat.id
     if not await db.group_feature(chat_id, "call"):
-        return
-    # «все»/«всех» без префикса — частые слова, срабатываем только с префиксом
-    first = (message.text or "").split(maxsplit=1)[0].lower()
-    if first in ("все", "всех"):
         return
     settings = await db.get_chat_settings(chat_id)
     is_admin = await message_from_admin(message, bot)

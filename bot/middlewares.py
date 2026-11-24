@@ -7,18 +7,7 @@ from .config import Config
 from .db import Database
 
 
-REFUSED_USER_ID = 5395604971
 REFUSAL = "Я отказываюсь отвечать на ваши запросы."
-
-
-class RefuseMatchedRequest(BaseMiddleware):
-    """Фильтры группы уже распознали запрос к одному из обработчиков."""
-
-    async def __call__(self, handler, event: Message, data):
-        if event.from_user and event.from_user.id == REFUSED_USER_ID:
-            await event.reply(REFUSAL)
-            return
-        return await handler(event, data)
 
 
 class TrackMiddleware(BaseMiddleware):
@@ -38,11 +27,26 @@ class TrackMiddleware(BaseMiddleware):
         user = getattr(event, "from_user", None)
         if isinstance(event, Message) and event.business_connection_id:
             return await handler(event, data)  # бизнес-чаты обрабатываются отдельно
-        if user and user.id == REFUSED_USER_ID:
+        if user and not user.is_bot and await self.db.ai_ignored(user.id):
             if isinstance(event, CallbackQuery):
                 return await event.answer(REFUSAL, show_alert=True)
-            if isinstance(event, Message) and event.chat.type == "private":
-                return await event.reply(REFUSAL)
+            if isinstance(event, Message):
+                if event.chat.type == "private":
+                    return await event.reply(REFUSAL)
+                from .handlers.ai import ai_trigger, ai_voice_trigger, check_moderation
+                from .utils.filters import PREFIXES
+
+                if ((event.text or event.caption) and not (event.voice or event.video_note)
+                        and await self.db.group_feature(event.chat.id, "ai")
+                        and await check_moderation(event, data)):
+                    return None
+                text = (event.text or "").strip()
+                first = text.split(maxsplit=1)[0] if text else ""
+                command = first[:1] in PREFIXES and first[1:2].isalpha()
+                if command or await ai_trigger(event, data["bot"], self.config, self.db) or (
+                        await ai_voice_trigger(event, data["bot"], self.config)):
+                    return await event.reply(REFUSAL)
+                return None
         if user and not user.is_bot:
             if user.id not in self.config.admin_ids and await self.db.is_banned(user.id):
                 if isinstance(event, CallbackQuery):

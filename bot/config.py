@@ -31,6 +31,7 @@ class Config:
     proxy: str | None = None
     ai_api_key: str | None = None
     ai_base_url: str = "https://api.deepseek.com"
+    ai_code_model: str | None = None
     ai_model: str = "deepseek-chat"
     ai_chat_tokens: int = 400
     ai_code_tokens: int = 2400
@@ -78,8 +79,9 @@ def load_config() -> Config:
         max_usernames=_int("MAX_USERNAMES", 10),
         business_cache_days=_int("BUSINESS_CACHE_DAYS", 14),
         proxy=os.getenv("PROXY", "").strip() or None,
-        ai_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
+        ai_api_key=os.getenv("AI_API_KEY", "").strip() or os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
         ai_base_url=os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com",
+        ai_code_model=os.getenv("AI_CODE_MODEL", "").strip() or None,
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
         ai_chat_tokens=max(1, _int("AI_CHAT_MAX_TOKENS", 400)),
         ai_code_tokens=max(1, _int("AI_CODE_MAX_TOKENS", 2400)),
