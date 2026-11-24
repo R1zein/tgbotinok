@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
@@ -22,9 +24,6 @@ class AdminStates(StatesGroup):
     broadcast = State()
     say = State()
     ban = State()
-    unban = State()
-    ignore_add = State()
-    ignore_remove = State()
 
 
 def is_admin(user_id: int, config: Config) -> bool:
@@ -38,14 +37,46 @@ def admin_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm:bc"),
          InlineKeyboardButton(text="🤖 Юзербот", callback_data="adm:ub")],
         [InlineKeyboardButton(text="✍️ Написать в группу от бота", callback_data="adm:say")],
-        [InlineKeyboardButton(text="🤖 Игнор ИИ", callback_data="adm:ignore:0")],
-        [InlineKeyboardButton(text="🚫 Заблокировать", callback_data="adm:ban"),
-         InlineKeyboardButton(text="♻️ Разблокировать", callback_data="adm:unban")],
+        [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:black")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
     ])
 
 
 BACK = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm:main")]])
+
+
+def button(text: str, action: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=f"adm:{action}")
+
+
+async def blacklist_screen(db: Database, mode: str = "black", page: int = 0):
+    entries = await db.blacklist_page(page)
+    title = {"black": "Чёрный список · последние 10", "all": "Чёрный список",
+             "pick": "Кого разблокировать?"}[mode]
+    lines, rows = [title], []
+    for entry in entries[:10]:
+        uid = entry["id"]
+        label = f"@{entry['username']} · {uid}" if entry["username"] else str(uid)
+        if mode == "pick":
+            rows.append([button(label, f"release:{uid}:{page}")])
+        else:
+            lines.append(escape(label))
+    if not entries:
+        lines.append("Список пуст.")
+    if mode == "black":
+        rows.append([button("Все", "all:0")])
+    else:
+        nav = []
+        if page:
+            nav.append(button("←", f"{mode}:{page-1}"))
+        if len(entries) > 10:
+            nav.append(button("→", f"{mode}:{page+1}"))
+        if nav:
+            rows.append(nav)
+    if mode != "pick":
+        rows.append([button("Заблокировать", "ban"), button("Разблокировать", "pick:0")])
+    rows.append([button("Назад", "main" if mode == "black" else "black")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(Command("admin"), F.chat.type == "private")
@@ -65,22 +96,21 @@ async def cb_admin(call: CallbackQuery, bot: Bot, db: Database, config: Config,
     await state.clear()
     if action == "main":
         await call.message.edit_text("🛠 <b>Админ-панель</b>", reply_markup=admin_kb())
-    elif action.startswith("ignore:"):
-        page = int(action.split(":")[1])
-        ids = await db.fetchall("SELECT user_id FROM ai_ignore WHERE enabled=1 ORDER BY user_id "
-                                "LIMIT 21 OFFSET ?", (page * 20,))
-        listing = "\n".join(str(row["user_id"]) for row in ids[:20]) or "Список пуст."
-        rows = [[InlineKeyboardButton(text="Добавить ID", callback_data="adm:ignore_add"),
-                 InlineKeyboardButton(text="Удалить ID", callback_data="adm:ignore_remove")]]
-        if page:
-            rows.append([InlineKeyboardButton(text="←", callback_data=f"adm:ignore:{page-1}")])
-        if len(ids) > 20:
-            rows.append([InlineKeyboardButton(text="→", callback_data=f"adm:ignore:{page+1}")])
-        rows.extend(BACK.inline_keyboard)
-        await call.message.edit_text(f"🤖 Игнор ИИ\n{listing}", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-    elif action in ("ignore_add", "ignore_remove"):
-        await state.set_state(AdminStates.ignore_add if action == "ignore_add" else AdminStates.ignore_remove)
-        await call.message.edit_text("Введите Telegram ID пользователя.", reply_markup=BACK)
+    elif action == "black" or action.startswith(("all:", "pick:", "release:")) or action == "unban":
+        mode, _, raw = action.partition(":")
+        page = 0
+        if mode == "release":
+            uid, page_raw = raw.split(":")
+            await db.set_banned(int(uid), False)
+            mode, page = "pick", int(page_raw)
+            if page and not await db.blacklist_page(page):
+                page = 0
+        elif mode == "unban":
+            mode = "pick"
+        elif raw:
+            page = int(raw)
+        text, kb = await blacklist_screen(db, mode, page)
+        await call.message.edit_text(text, reply_markup=kb)
     elif action == "stats":
         s = await db.stats()
         await call.message.edit_text(
@@ -143,9 +173,10 @@ async def cb_admin(call: CallbackQuery, bot: Bot, db: Database, config: Config,
             "текст, фото, видео, стикеры, голосовые.\nКогда закончите — нажмите «Готово».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅ Готово", callback_data="adm:main")]]))
-    elif action in ("ban", "unban"):
-        await state.set_state(AdminStates.ban if action == "ban" else AdminStates.unban)
-        await call.message.edit_text("Отправьте ID пользователя.", reply_markup=BACK)
+    elif action == "ban":
+        await state.set_state(AdminStates.ban)
+        await call.message.edit_text("Отправьте @username или числовой Telegram ID.",
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button("Назад", "black")]]))
     await call.answer()
 
 
@@ -224,35 +255,22 @@ async def _broadcast(bot: Bot, source: Message, users: list[int], status: Messag
 
 
 @router.message(AdminStates.ban, F.chat.type == "private")
-@router.message(AdminStates.unban, F.chat.type == "private")
 async def on_ban(message: Message, db: Database, config: Config, state: FSMContext):
     if not is_admin(message.from_user.id, config):
         return
-    banning = await state.get_state() == AdminStates.ban.state
-    await state.clear()
     raw = (message.text or "").strip()
-    if not raw.lstrip("-").isdigit():
-        return await message.answer("Нужен числовой ID.", reply_markup=admin_kb())
-    uid = int(raw)
-    if banning and uid in config.admin_ids:
-        return await message.answer("Нельзя заблокировать администратора.", reply_markup=admin_kb())
-    await db.set_banned(uid, banning)
-    await message.answer(f"{'🚫 Заблокирован' if banning else '♻️ Разблокирован'}: <code>{uid}</code>",
-                         reply_markup=admin_kb())
-
-@router.message(AdminStates.ignore_add, F.chat.type == "private")
-@router.message(AdminStates.ignore_remove, F.chat.type == "private")
-async def on_ignore(message: Message, db: Database, config: Config, state: FSMContext):
-    if not is_admin(message.from_user.id, config):
-        return
-    raw = (message.text or "").strip()
-    if not raw.isascii() or not raw.isdigit() or len(raw) > 19 or not 0 < int(raw) < 2**63:
-        return await message.answer("Введите положительный числовой Telegram ID.", reply_markup=BACK)
-    uid = int(raw)
-    adding = await state.get_state() == AdminStates.ignore_add.state
-    if adding and uid in config.admin_ids:
-        return await message.answer("Нельзя добавить администратора в игнор.", reply_markup=BACK)
-    await db.set_ai_ignore(uid, adding)
+    if re.fullmatch(r"[0-9]{1,19}", raw) and 0 < int(raw) < 2**63:
+        uid = int(raw)
+    elif re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{0,31}", raw):
+        matches = await db.lookup_username(raw.lstrip("@"))
+        if len(matches) != 1:
+            return await message.answer("Не удалось однозначно найти ник. Отправьте Telegram ID.")
+        uid = matches[0]["id"]
+    else:
+        return await message.answer("Введите @username или положительный числовой ID.")
+    if uid in config.admin_ids:
+        return await message.answer("Нельзя заблокировать администратора.")
+    await db.set_banned(uid, True)
     await state.clear()
-    await message.answer(f"{uid} {'добавлен в игнор ИИ' if adding else 'удалён из игнора ИИ'}.",
-                         reply_markup=admin_kb())
+    text, kb = await blacklist_screen(db)
+    await message.answer(f"Заблокирован {uid}.\n\n{text}", reply_markup=kb)

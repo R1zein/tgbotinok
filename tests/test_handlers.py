@@ -531,7 +531,7 @@ async def test_admin(env):
     assert await db.is_banned(USER)
     s.clear()
     await feed(upd(message=msg(USER, USER, "/start")))
-    assert not s.calls  # заблокированного игнорируем
+    assert "Я отказываюсь отвечать на ваши запросы." in s.texts()
     await feed(cb(USER, "adm:stats", msg(USER, BOT_ID, "x")))
     await feed(cb(ADMIN, "adm:bc", msg(ADMIN, BOT_ID, "x")))
     await feed(upd(message=msg(ADMIN, ADMIN, "рассылка")))

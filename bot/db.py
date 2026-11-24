@@ -8,8 +8,6 @@ import aiosqlite
 from .features import GLOBAL_FEATURES, GROUP_DEFAULTS, USER_DEFAULTS
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS ai_ignore(user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL);
-INSERT OR IGNORE INTO ai_ignore VALUES(5395604971, 1);
 CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY,
     username TEXT,
@@ -175,6 +173,20 @@ class Database:
 
     async def _migrate(self) -> None:
         """Добавляет столбцы, появившиеся в новых версиях, в уже существующую базу."""
+        async with self.conn.execute("PRAGMA table_info(users)") as cur:
+            user_cols = {row["name"] for row in await cur.fetchall()}
+        if "ban_order" not in user_cols:
+            await self.conn.execute("BEGIN IMMEDIATE")
+            await self.conn.execute("ALTER TABLE users ADD COLUMN ban_order INTEGER NOT NULL DEFAULT 0")
+            if await self.scalar("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_ignore'"):
+                await self.conn.execute(
+                    "INSERT INTO users(id,is_banned,created_at) SELECT user_id,1,? FROM ai_ignore "
+                    "WHERE enabled=1 ON CONFLICT(id) DO UPDATE SET is_banned=1", (now(),))
+            else:
+                await self.conn.execute(
+                    "INSERT INTO users(id,is_banned,created_at) VALUES(5395604971,1,?) "
+                    "ON CONFLICT(id) DO UPDATE SET is_banned=1", (now(),))
+            await self.conn.commit()
         async with self.conn.execute("PRAGMA table_info(business_messages)") as cur:
             cols = {r["name"] for r in await cur.fetchall()}
         if "auto" not in cols:
@@ -228,22 +240,31 @@ class Database:
             (user_id, username, first_name, int(started), now()),
         )
 
-    async def ai_ignored(self, user_id: int) -> bool:
-        return bool(await self.scalar("SELECT enabled FROM ai_ignore WHERE user_id=?", (user_id,)))
-
-    async def set_ai_ignore(self, user_id: int, enabled: bool) -> None:
-        await self.execute("INSERT INTO ai_ignore VALUES(?,?) ON CONFLICT(user_id) "
-                           "DO UPDATE SET enabled=excluded.enabled", (user_id, int(enabled)))
-
     async def is_banned(self, user_id: int) -> bool:
         return bool(await self.scalar("SELECT is_banned FROM users WHERE id=?", (user_id,)))
 
     async def set_banned(self, user_id: int, banned: bool) -> None:
+        if not banned:
+            await self.execute("UPDATE users SET is_banned=0 WHERE id=?", (user_id,))
+            return
         await self.execute(
-            "INSERT INTO users(id, is_banned, created_at) VALUES(?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET is_banned=excluded.is_banned",
-            (user_id, int(banned), now()),
+            "INSERT INTO users(id,is_banned,created_at,ban_order) "
+            "SELECT ?,1,?,COALESCE(MAX(ban_order),0)+1 FROM users WHERE 1 "
+            "ON CONFLICT(id) DO UPDATE SET is_banned=1,ban_order=excluded.ban_order "
+            "WHERE users.is_banned=0", (user_id, now()),
         )
+
+    async def blacklist_page(self, page: int):
+        return await self.fetchall(
+            "SELECT id, COALESCE(username,(SELECT username FROM chat_members WHERE user_id=users.id "
+            "ORDER BY last_seen DESC LIMIT 1)) AS username FROM users WHERE is_banned=1 "
+            "ORDER BY ban_order DESC,id LIMIT 11 OFFSET ?", (page * 10,))
+
+    async def lookup_username(self, username: str):
+        return await self.fetchall(
+            "SELECT id FROM users WHERE username=? COLLATE NOCASE UNION "
+            "SELECT user_id FROM chat_members WHERE username=? COLLATE NOCASE LIMIT 2",
+            (username, username))
 
     async def get_user_settings(self, user_id: int) -> dict:
         raw = await self.scalar("SELECT settings FROM users WHERE id=?", (user_id,))

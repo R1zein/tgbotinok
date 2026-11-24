@@ -27,7 +27,7 @@ class TrackMiddleware(BaseMiddleware):
         user = getattr(event, "from_user", None)
         if isinstance(event, Message) and event.business_connection_id:
             return await handler(event, data)  # бизнес-чаты обрабатываются отдельно
-        if user and not user.is_bot and await self.db.ai_ignored(user.id):
+        if user and not user.is_bot and user.id not in self.config.admin_ids and await self.db.is_banned(user.id):
             if isinstance(event, CallbackQuery):
                 return await event.answer(REFUSAL, show_alert=True)
             if isinstance(event, Message):
@@ -46,11 +46,6 @@ class TrackMiddleware(BaseMiddleware):
                 if command or await ai_trigger(event, data["bot"], self.config, self.db) or (
                         await ai_voice_trigger(event, data["bot"], self.config)):
                     return await event.reply(REFUSAL)
-                return None
-        if user and not user.is_bot:
-            if user.id not in self.config.admin_ids and await self.db.is_banned(user.id):
-                if isinstance(event, CallbackQuery):
-                    await event.answer("Вы заблокированы в боте", show_alert=True)
                 return None
         if isinstance(event, Message) and user and not user.is_bot:
             chat = event.chat

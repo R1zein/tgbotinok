@@ -547,7 +547,7 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
                 r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
                 r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I)):
             return
-    if await db.ai_ignored(message.from_user.id):
+    if await db.is_banned(message.from_user.id):
         return
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
