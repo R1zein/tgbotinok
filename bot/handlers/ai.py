@@ -89,6 +89,29 @@ def call_words(config: Config) -> set[str]:
     return AI_CMDS | {config.ai_name.lower()}
 
 
+def requested_calm(text: str) -> bool | None:
+    phrase = re.sub(r"[,.!?…]+", " ", text.casefold().replace("ё", "е"))
+    phrase = " ".join(phrase.split())
+    phrase = re.sub(r"^(?:эй |слушай )?бот(?:ик)?\s+", "", phrase)
+    phrase = re.sub(r"^(?:пожалуйста |давай )+", "", phrase)
+    phrase = re.sub(r" (?:пожалуйста|со мной)$", "", phrase)
+    if re.fullmatch(r"успокойся|успокойтесь|без (?:шуток|подколов|юмора)|не подкалывай(?: меня)?|"
+                    r"не шути(?: со мной)?|(?:говори |отвечай |общайся )?(?:со мной )?"
+                    r"(?:спокойнее|спокойно|ровнее|серьезно)|хватит (?:шутить|подкалывать)", phrase):
+        return True
+    if re.fullmatch(r"(?:можно |можешь )?(?:снова |опять )?шутить|шути(?: как раньше)?|"
+                    r"верни (?:шутки|юмор)|с юмором", phrase):
+        return False
+    return None
+
+
+async def apply_tone_request(message: Message, db: Database, config: Config, calm: bool) -> None:
+    await db.set_calm_tone(message.chat.id, message.from_user.id, calm, message.message_id)
+    if message.text:
+        await db.remember_group(message.chat.id, message.message_id, author_name(message), message.text)
+    await send_answer(message, db, config, "Хорошо, с тобой без подколов." if calm else "Договорились, вернём шутки.")
+
+
 async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -> bool | dict:
     """Обращение «ии/бот/esg …», упоминание бота или ответ на его сообщение. Передаёт `question`."""
     text = (message.text or "").strip()
@@ -111,6 +134,8 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     reply = message.reply_to_message
     if reply and reply.from_user and reply.from_user.id != me.id and not (handle or entity_call):
         return False
+    if word == "бот" and requested_calm(rest) is not None:
+        return {"question": rest}
     if word in call_words(config) and word != "бот":
         return {"question": rest.strip(" ,:")}
     if word == "бот" and text[:1] in PREFIXES:
@@ -275,6 +300,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
                               reply_to=await reply_context(db, message),
+                              calm=persona == "adaptive" and await db.calm_tone(chat_id, message.from_user.id),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
         if await check_moderation(message,
@@ -321,6 +347,11 @@ async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, conf
                     question: str, coding: bool = False):
     if not await db.group_feature(message.chat.id, "ai"):
         return
+    tone = requested_calm(question) if not coding else None
+    if tone is not None and (await db.get_chat_settings(message.chat.id)).get("ai_persona") == "adaptive":
+        await apply_tone_request(message, db, config, tone)
+        _recorded.add((message.chat.id, message.message_id))
+        return
     if not question:
         answer = "Добавьте задачу после /code или ответьте командой на код." if coding else "Я здесь. Что подсказать?"
         await db.remember_group(message.chat.id, message.message_id, author_name(message), message.text)
@@ -366,6 +397,10 @@ async def ai_voice(message: Message, bot: Bot, db: Database, ai: AIClient, confi
         return await message.reply("🤖 Не получилось расслышать это сообщение.", parse_mode=None)
     if not text:
         return await message.reply("🤖 Не разобрал, что сказано 🙉", parse_mode=None)
+    tone = requested_calm(text)
+    if tone is not None and (await db.get_chat_settings(message.chat.id)).get("ai_persona") == "adaptive":
+        await apply_tone_request(message, db, config, tone)
+        return
     await _respond(message, bot, db, ai, config, text, f"[голосовое] {text}")
 
 
@@ -542,6 +577,11 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
         continuing = any(sender == recent_sender for sender, _ in history[-6:])
         if every or not continuing:
             return
+        tone = requested_calm(text)
+        if (tone is not None and settings.get("ai_persona") == "adaptive" and history[-1][0] == recent_sender
+                and not await db.is_banned(message.from_user.id)):
+            await apply_tone_request(message, db, config, tone)
+            return
         # Даже во время диалога короткое суждение может относиться к разговору людей.
         if not ("?" in text or re.match(
                 r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
@@ -561,6 +601,7 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
                               reply_to=await reply_context(db, message),
+                              calm=persona == "adaptive" and await db.calm_tone(chat_id, message.from_user.id),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
     try:
         decision = (await ai.complete(messages)).strip()

@@ -62,6 +62,10 @@ BEGIN
         ORDER BY message_id DESC LIMIT 1 OFFSET 512
     );
 END;
+CREATE TABLE IF NOT EXISTS member_tone(
+    chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, calm INTEGER NOT NULL,
+    message_id INTEGER NOT NULL, PRIMARY KEY(chat_id,user_id)
+);
 CREATE TABLE IF NOT EXISTS member_context(
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -459,6 +463,16 @@ class Database:
             "INSERT OR IGNORE INTO member_context(chat_id,user_id,message_id,text) VALUES(?,?,?,?)",
             (chat_id, user_id, message_id, text),
         )
+
+    async def calm_tone(self, chat_id: int, user_id: int) -> bool:
+        return bool(await self.scalar("SELECT calm FROM member_tone WHERE chat_id=? AND user_id=?",
+                                      (chat_id, user_id)))
+
+    async def set_calm_tone(self, chat_id: int, user_id: int, calm: bool, message_id: int) -> None:
+        await self.execute(
+            "INSERT INTO member_tone VALUES(?,?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET "
+            "calm=excluded.calm,message_id=excluded.message_id WHERE excluded.message_id>=member_tone.message_id",
+            (chat_id, user_id, int(calm), message_id))
 
     async def member_history(self, chat_id: int, user_id: int, before: int) -> list[str]:
         rows = await self.fetchall(
