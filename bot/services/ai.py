@@ -369,7 +369,10 @@ class AIClient:
                     json=payload,
                 ) as resp:
                     status = resp.status
-                    data = await resp.json(content_type=None)
+                    try:
+                        data = await resp.json(content_type=None)
+                    except ValueError:
+                        data = None
             except Exception as e:  # noqa: BLE001 — сеть, таймаут, не-JSON в ответе
                 status, data = None, None
                 log.warning("ИИ: попытка %s/%s не прошла: %s: %s", attempt, ATTEMPTS,
@@ -384,6 +387,16 @@ class AIClient:
             raise AIError("ИИ сейчас недоступен, попробуйте позже.")
         if status in RETRY_STATUSES:
             raise AIError("Сервер ИИ перегружен, попробуйте чуть позже.")
+        error = data.get("error") if isinstance(data, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        if code == "model_not_found":
+            raise AIError(f"Модель {payload['model']} недоступна этому ключу или неверно указан её ID (HTTP {status}).")
+        if code == "insufficient_quota":
+            raise AIError("Квота API исчерпана. Проверьте биллинг проекта.")
+        if status == 403:
+            raise AIError("Провайдер запретил доступ (HTTP 403). Проверьте права проекта и доступность API с сервера.")
+        if status == 404:
+            raise AIError("API не нашёл ресурс (HTTP 404). Проверьте адрес AI_BASE_URL и ID модели.")
         if status == 401:
             raise AIError("Ключ ИИ неверный — администратору бота нужно его проверить.")
         if status == 402:
@@ -391,9 +404,10 @@ class AIClient:
         if status == 429:
             raise AIError("ИИ перегружен, попробуйте через минуту.")
         if status != 200:
-            log.warning("ИИ: ответ %s: %s", status, str(data)[:300])
-            raise AIError("ИИ ответил ошибкой, попробуйте позже.")
+            known_code = code if code in ("unsupported_parameter", "unsupported_value", "context_length_exceeded", "invalid_request_error") else "unknown"
+            log.warning("ИИ: HTTP %s, модель %s, код %s", status, payload["model"], known_code)
+            raise AIError(f"API отклонил запрос (HTTP {status}, {known_code}).")
         try:
             return data["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError) as e:
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
             raise AIError("ИИ прислал пустой ответ.") from e
