@@ -6,13 +6,16 @@ cd "$(dirname "$0")"
 
 ask() {  # ask "Вопрос" ПЕРЕМЕННАЯ
     local prompt=$1 key=$2 current answer
+    local -a flags=(-r)
+    if [[ ${3:-} == secret ]]; then flags+=(-s); fi
     current=$(grep -E "^$key=" .env | head -n1 | cut -d= -f2- || true)
     if [ -n "$current" ]; then
-        read -rp "$prompt [Enter — оставить текущее]: " answer < /dev/tty
+        read "${flags[@]}" -p "$prompt [Enter — оставить текущее]: " answer < /dev/tty
         answer=${answer:-$current}
     else
-        read -rp "$prompt: " answer < /dev/tty
+        read "${flags[@]}" -p "$prompt: " answer < /dev/tty
     fi
+    if [[ ${3:-} == secret ]]; then printf '\n' > /dev/tty; fi
     set_var "$key" "$(echo "$answer" | tr -d '[:space:]')"
 }
 
@@ -35,7 +38,7 @@ docker compose version >/dev/null
 echo
 echo "=== 2/4 Настройки бота ==="
 [ -f .env ] || cp .env.example .env
-ask "Токен бота от @BotFather" BOT_TOKEN
+ask "Токен бота от @BotFather" BOT_TOKEN secret
 ask "Ваш Telegram ID (узнать: @userinfobot)" ADMIN_IDS
 
 if curl -s -m 10 -o /dev/null https://api.telegram.org; then
@@ -48,8 +51,12 @@ echo "чтобы убрать ранее заданный — введите: -"
 ask "Прокси" PROXY
 if [ "$(grep -E '^PROXY=' .env | cut -d= -f2-)" = "-" ]; then set_var PROXY ""; fi
 
-echo "Ключ DeepSeek для ИИ-ответов в группах (необязательно, Enter — пропустить):"
-ask "DEEPSEEK_API_KEY" DEEPSEEK_API_KEY
+echo "Настройки ИИ. Для OpenAI укажите https://api.openai.com/v1 и ID моделей из вашего API."
+echo "Enter сохраняет текущие настройки. Пустой AI_CODE_MODEL использует основную модель."
+ask "Адрес API (AI_BASE_URL)" AI_BASE_URL
+ask "Модель для общения (AI_MODEL)" AI_MODEL
+ask "Модель для /code (AI_CODE_MODEL)" AI_CODE_MODEL
+ask "Ключ провайдера ИИ (AI_API_KEY, скрытый ввод)" AI_API_KEY secret
 
 echo
 echo "=== 3/4 Юзербот (подарки и юзернеймы) ==="
