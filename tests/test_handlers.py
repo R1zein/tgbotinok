@@ -1056,7 +1056,6 @@ async def test_group_nicks_delete_buttons_and_two_aliases(env, monkeypatch):
 async def test_group_ai(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     aih._warned.clear()
     ai = dp["ai"]
@@ -1201,7 +1200,6 @@ async def test_voice_to_text(env, monkeypatch):
 async def test_ai_answers_voice(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     aih._warned.clear()
     await db.set_chat_setting(GROUP, "ai", True)
@@ -1226,7 +1224,7 @@ async def test_ai_answers_voice(env, monkeypatch):
     await feed(upd(message=_voice(GROUP, USER, reply_to=bot_msg)))
     assert "сколько будет два плюс два" in seen[-1][1]["content"]
     assert any(t == "Четыре!" for t in s.texts())
-    assert any("[голосовое]" in t for _, t in aih.memory.get(GROUP))
+    assert any("[голосовое]" in t for _, t in await db.group_history(GROUP, 2**63-1))
 
     # обычное голосовое без обращения к боту — ИИ не трогает
     aih._last_answer.clear()
@@ -1292,7 +1290,6 @@ async def test_ai_reacts_by_emotion(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
     import bot.handlers.reactions as rx
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     rx._last.clear()
     await db.set_chat_setting(GROUP, "ai", True)
@@ -1368,7 +1365,6 @@ async def test_admin_say_to_group(env):
 async def test_ai_adaptive_persona(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     await feed(upd(message=msg(GROUP, USER, "йоу")))
     await db.set_chat_setting(GROUP, "ai", True)
@@ -1407,7 +1403,6 @@ async def test_ai_proactive_and_punish(env, monkeypatch):
 
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     aih._passive_last.clear()
     dp["config"] = dataclasses.replace(dp["config"], ai_api_key="sk-test")
@@ -1789,7 +1784,6 @@ async def test_admin_quoted_request_does_not_execute(env):
 async def test_ai_called_by_bot_word_and_name(env, monkeypatch):
     dp, bot, s, db, feed = env
     import bot.handlers.ai as aih
-    aih.memory._chats.clear()
     aih._last_answer.clear()
     await feed(upd(message=msg(GROUP, USER, "привет")))
     seen = []
@@ -1816,3 +1810,48 @@ async def test_ai_called_by_bot_word_and_name(env, monkeypatch):
     clock[0] += 10
     await feed(upd(message=msg(GROUP, USER, "у меня работа бот не причём")))
     assert len(seen) == n
+
+
+async def test_code_request_keeps_full_quote_and_answer(env, monkeypatch):
+    import json
+    from bot.handlers.ai import _last_answer
+    dp, bot, session, db, feed = env
+    _last_answer.clear()
+    await db.set_chat_setting(GROUP, "ai", True)
+    source = "print('example')\n" * 160
+    answer = "line of code\n" * 550
+
+    async def complete(messages, max_tokens):
+        payload = json.loads(messages[-1]["content"])
+        assert payload["текущее сообщение"]["ответ на сообщение"]["текст"] == source
+        assert max_tokens == dp["config"].ai_code_tokens
+        return answer
+
+    monkeypatch.setattr(dp["ai"], "complete", complete)
+    await feed(upd(message=msg(GROUP, USER, "/code разбери", reply_to=msg(GROUP, OTHER, source))))
+    assert "".join(session.texts()) == answer.strip()
+
+
+async def test_persistent_relevant_history(tmp_path):
+    from bot.services.ai import relevant_history
+    path = str(tmp_path / "history.db")
+    db = Database(path)
+    await db.connect()
+    try:
+        important = "Traceback " + "x" * 3500
+        await db.remember_group(GROUP, 1, "Автор", important)
+        await db.remember_group(GROUP - 1, 1, "Другой", "Traceback другого чата")
+        for i in range(2, 72):
+            await db.remember_group(GROUP, i, "Другой", "общий разговор")
+    finally:
+        await db.close()
+    reopened = Database(path)
+    await reopened.connect()
+    try:
+        history = await reopened.group_history(GROUP, 72)
+        selected = relevant_history(history, "объясни Traceback", "Автор", 16000)
+        assert selected[0] == ("Автор", important)
+        assert len(selected) == 7
+        assert len(history) == 71
+    finally:
+        await reopened.close()

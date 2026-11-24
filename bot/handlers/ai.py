@@ -1,8 +1,7 @@
 """ИИ-ответы в группах.
 
 Бот отвечает, когда его упомянули (@бот …), ответили на его сообщение или написали
-«ии вопрос». Для контекста помнит последние сообщения группы (только в памяти, и только
-в группах, где функция включена). Включается администратором в /settings.
+«ии вопрос». История хранится в SQLite для групп, где включён ИИ. Включается администратором в /settings.
 """
 import asyncio
 import logging
@@ -19,7 +18,7 @@ from aiogram.types import Message, TelegramObject
 from ..middlewares import REFUSED_USER_ID, REFUSAL
 from ..config import Config
 from ..db import Database
-from ..services.ai import (AIClient, AIError, ChatMemory, MOSCOW_OFFSET, build_messages,
+from ..services.ai import (AIClient, AIError, MOSCOW_OFFSET, build_messages,
                            build_moderation_messages, explicit_direct_insult, parse_reply)
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
@@ -34,17 +33,6 @@ router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
 COOLDOWNS = [0, 3, 5, 10, 20, 30, 60]  # варианты паузы между ответами ИИ в чате (сек)
 AI_CMDS = {"ии", "ai", "нейро", "gpt", "бот", "bot", "ботик"}
-memory = ChatMemory()
-_voice_text: dict[tuple[int, int], str] = {}
-
-
-def remember_transcript(message: Message, text: str) -> None:
-    _voice_text[(message.chat.id, message.message_id)] = text[:500]
-    if len(_voice_text) > 512:
-        _voice_text.pop(next(iter(_voice_text)))
-    memory.add(message.chat.id, author_name(message), f"[расшифровка] {text}")
-
-
 _last_answer: dict[int, float] = {}       # чат -> когда ИИ начал последний ответ
 _warned: dict[int, float] = {}            # чат -> когда последний раз писали «подождите»
 _recorded: set[tuple[int, int]] = set()  # вопросы, уже записанные в память обработчиком
@@ -86,13 +74,14 @@ def author_name(message: Message) -> str:
     return f"{u.full_name}{handle} [ID {u.id}]"
 
 
-def reply_context(message: Message) -> dict | None:
+async def reply_context(db: Database, message: Message) -> dict | None:
     reply = message.reply_to_message
     if reply and reply.from_user:
         quoted = reply.text or reply.caption
         if not quoted and media_of(reply):
-            quoted = _voice_text.get((reply.chat.id, reply.message_id), "[аудио без расшифровки]")
-        return {"автор": author_name(reply), "текст": (quoted or "[медиа]")[:300]}
+            quoted = await db.scalar("SELECT body FROM group_ai_history WHERE chat_id=? AND message_id=?",
+                                     (reply.chat.id, reply.message_id)) or "[аудио без расшифровки]"
+        return {"автор": author_name(reply), "текст": (quoted or "[медиа]")}
     return None
 
 
@@ -115,6 +104,8 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     word, _, command_bot = word.partition("@")
     if command_bot and command_bot != (me.username or "").lower():
         return False
+    if first.lower().partition("@")[0] == "/code":
+        return {"coding": True, "question": rest or ("Разбери этот код." if message.reply_to_message else "")}
     handle = own_handle_match(text, me.username)
     entity_call = any(e.type == "text_mention" and e.user and e.user.id == me.id
                       for e in message.entities or [])
@@ -268,7 +259,7 @@ async def apply_punishment(message: Message, bot: Bot, db: Database, config: Con
 
 
 async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
-                   question: str, memory_text: str) -> None:
+                   question: str, memory_text: str, coding: bool = False) -> None:
     chat_id = message.chat.id
     settings = await db.get_chat_settings(chat_id)
     persona = settings.get("ai_persona", "normal")
@@ -278,51 +269,66 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     if persona == "adaptive":
         await remember_style(db, message, raw_question)
         style = await db.member_history(chat_id, message.from_user.id, message.message_id)
-    messages = build_messages(config.ai_name, persona, memory.get(chat_id),
+    history = await db.group_history(chat_id, message.message_id)
+    messages = build_messages(config.ai_name, persona, history,
                               author_name(message), question,
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              reply_to=reply_context(message),
+                              reply_to=await reply_context(db, message),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
-        if await check_moderation(message, memory.get(chat_id),
+        if await check_moderation(message,
                                {"bot": bot, "db": db, "ai": ai, "config": config},
                                text=raw_question, direct=True):
-            memory.add(chat_id, author_name(message), memory_text)
+            await db.remember_group(chat_id, message.message_id, author_name(message), memory_text)
             return
-    memory.add(chat_id, author_name(message), memory_text)
+    await db.remember_group(chat_id, message.message_id, author_name(message), memory_text)
     if len(_recorded) > 5000:
         _recorded.clear()
     _recorded.add((chat_id, message.message_id))
     await _typing(bot, message)
     try:
-        answer = await ai.complete(messages)
+        if coding:
+            messages[0]["content"] += " Режим программирования: подробно разбери задачу и приведи полный код, когда он нужен. Можно использовать блоки кода."
+            answer = await ai.complete(messages, max_tokens=config.ai_code_tokens)
+        else:
+            answer = await ai.complete(messages)
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
     res = parse_reply(answer)
     if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
         await react(bot, chat_id, message.message_id, res["reaction"])
-    answer = res["text"][:3500] or "🤔"
-    memory.add(chat_id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
-    await message.reply(answer, parse_mode=None)
+    await send_answer(message, db, config, res["text"] or "🤔")
+
+
+async def send_answer(message: Message, db: Database, config: Config, answer: str) -> None:
+    sender = f"{config.ai_name} (бот, ответ для {author_name(message)})"
+    while answer:
+        end = min(len(answer), 3900)
+        if end < len(answer):
+            newline = answer.rfind("\n", 0, end)
+            if newline > end // 2:
+                end = newline + 1
+        chunk, answer = answer[:end], answer[end:]
+        sent = await message.reply(chunk, parse_mode=None)
+        await db.remember_group(message.chat.id, sent.message_id, sender, chunk)
 
 
 @router.message(ai_trigger)
 async def ai_answer(message: Message, bot: Bot, db: Database, ai: AIClient, config: Config,
-                    question: str):
+                    question: str, coding: bool = False):
     if not await db.group_feature(message.chat.id, "ai"):
         return
     if not question:
-        answer = "Я здесь. Что подсказать?"
-        await message.reply(answer)
-        memory.add(message.chat.id, author_name(message), message.text)
-        memory.add(message.chat.id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
+        answer = "Добавьте задачу после /code или ответьте командой на код." if coding else "Я здесь. Что подсказать?"
+        await db.remember_group(message.chat.id, message.message_id, author_name(message), message.text)
+        await send_answer(message, db, config, answer)
         _recorded.add((message.chat.id, message.message_id))
         return
     if await _cooldown_ok(message, db):
-        await _respond(message, bot, db, ai, config, question, message.text)
+        await _respond(message, bot, db, ai, config, question, message.text, coding=coding)
 
 
 async def ai_voice_trigger(message: Message, bot: Bot, config: Config) -> bool:
@@ -401,8 +407,7 @@ def mentions_target(text: str, words: set[str]) -> bool:
     return False
 
 
-async def check_moderation(message: Message, history: list[tuple[str, str]],
-                           data: dict[str, Any], *, text: str | None = None,
+async def check_moderation(message: Message, data: dict[str, Any], *, text: str | None = None,
                            direct: bool = False) -> bool:
     """Модерация до разговорного обработчика, независимо от пауз и характера ИИ."""
     db, bot, config, ai = data["db"], data["bot"], data["config"], data.get("ai")
@@ -480,7 +485,7 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
     messages = build_moderation_messages(
         f"{config.ai_name} (@{me.username}, {me.first_name})",
         await creator_label(db, config, message.chat.id), f"{author_name(message)} (ID {uid})",
-        text, history, context)
+        text, await db.group_history(message.chat.id, message.message_id, 30), context)
     try:
         decision = await ai.complete(messages, max_tokens=250, temperature=0)
         target_line, _, details = decision.strip().partition("\n")
@@ -505,8 +510,7 @@ async def check_moderation(message: Message, history: list[tuple[str, str]],
     return False
 
 
-async def passive_check(message: Message, history: list[tuple[str, str]],
-                        data: dict[str, Any]) -> None:
+async def passive_check(message: Message, data: dict[str, Any]) -> None:
     """Разговорный ИИ решает, вмешаться ли в беседу; наказания проверяются отдельно."""
     db: Database = data["db"]
     bot: Bot = data["bot"]
@@ -532,6 +536,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
     reply = message.reply_to_message
     if reply and (not reply.from_user or reply.from_user.id != me.id):
         return
+    history = await db.group_history(chat_id, message.message_id)
     if not refers_to_bot(message, me, config):
         recent_sender = f"{config.ai_name} (бот, ответ для {author_name(message)})"
         continuing = any(sender == recent_sender for sender, _ in history[-6:])
@@ -556,7 +561,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
-                              reply_to=reply_context(message),
+                              reply_to=await reply_context(db, message),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
     try:
         decision = (await ai.complete(messages)).strip()
@@ -575,9 +580,7 @@ async def passive_check(message: Message, history: list[tuple[str, str]],
             _last_answer[chat_id] = time.time()
             if res["reaction"]:
                 await react(bot, chat_id, message.message_id, res["reaction"])
-            answer = res["text"][:3500]
-            memory.add(chat_id, f"{config.ai_name} (бот, ответ для {author_name(message)})", answer)
-            await message.reply(answer, parse_mode=None)
+            await send_answer(message, db, config, res["text"])
 
 
 class AIMemoryMiddleware(BaseMiddleware):
@@ -585,13 +588,14 @@ class AIMemoryMiddleware(BaseMiddleware):
 
     async def __call__(self, handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
                        event: TelegramObject, data: dict[str, Any]) -> Any:
+        db = data["db"]
         if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
                 and (event.text or event.caption) and not (event.voice or event.video_note)
                 and event.from_user and not event.from_user.is_bot
                 and await data["db"].group_feature(event.chat.id, "ai")):
             try:
-                if await check_moderation(event, memory.get(event.chat.id), data):
-                    memory.add(event.chat.id, author_name(event), event.text or event.caption)
+                if await check_moderation(event, data):
+                    await db.remember_group(event.chat.id, event.message_id, author_name(event), event.text or event.caption)
                     return
             except Exception:
                 record_moderation(event, "Ошибка обработки модерации; подробности в журнале сервера.")
@@ -600,23 +604,24 @@ class AIMemoryMiddleware(BaseMiddleware):
         if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
                 and event.from_user and not event.from_user.is_bot and media_of(event)
                 and await data["db"].group_feature(event.chat.id, "ai")):
-            memory.add(event.chat.id, author_name(event), "[отправлено аудио или видеосообщение]")
+            await db.remember_group(event.chat.id, event.message_id, author_name(event), "[отправлено аудио или видеосообщение]")
         result = await handler(event, data)
         if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
-                and event.text and event.from_user and not event.from_user.is_bot):
+                and (event.text or event.caption) and not (event.voice or event.video_note)
+                and event.from_user and not event.from_user.is_bot):
             try:
                 if (event.chat.id, event.message_id) in _recorded:
                     _recorded.discard((event.chat.id, event.message_id))
                 elif await data["db"].group_feature(event.chat.id, "ai"):
-                    history = memory.get(event.chat.id)  # контекст до этого сообщения
-                    if result is UNHANDLED:
-                        task = asyncio.create_task(passive_check(event, history, data))
+                    if event.text and result is UNHANDLED:
+                        task = asyncio.create_task(passive_check(event, data))
                         _bg_tasks.add(task)
                         task.add_done_callback(_bg_tasks.discard)
-                    memory.add(event.chat.id, author_name(event), event.text)
+                    body = event.text or event.caption
+                    await db.remember_group(event.chat.id, event.message_id, author_name(event), body)
                     settings = await data["db"].get_chat_settings(event.chat.id)
                     if settings.get("ai_persona") == "adaptive":
-                        await remember_style(data["db"], event, event.text)
-            except Exception:  # noqa: BLE001
-                pass
+                        await remember_style(db, event, body)
+            except Exception:
+                log.exception("Не удалось сохранить контекст сообщения %s", event.message_id)
         return result

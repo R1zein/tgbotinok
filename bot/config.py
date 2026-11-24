@@ -32,6 +32,8 @@ class Config:
     ai_api_key: str | None = None
     ai_base_url: str = "https://api.deepseek.com"
     ai_model: str = "deepseek-chat"
+    ai_chat_tokens: int = 400
+    ai_code_tokens: int = 2400
     ai_daily_limit: int = 2000
     ai_timeout: int = 120
     ai_name: str = "esg"
@@ -79,6 +81,8 @@ def load_config() -> Config:
         ai_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
         ai_base_url=os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com",
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
+        ai_chat_tokens=max(1, _int("AI_CHAT_MAX_TOKENS", 400)),
+        ai_code_tokens=max(1, _int("AI_CODE_MAX_TOKENS", 2400)),
         ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
         ai_timeout=_int("AI_TIMEOUT", 120),
         ai_name=os.getenv("AI_NAME", "").strip() or "esg",

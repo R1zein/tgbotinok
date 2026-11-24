@@ -7,7 +7,7 @@
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 
-from .ai import remember_transcript
+from .ai import author_name
 from ..db import Database
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import Cmd
@@ -45,7 +45,8 @@ async def cmd_group_stt(message: Message, bot: Bot, db: Database, stt: Transcrib
     placeholder = await message.reply_to_message.reply("⏳ Расшифровываю…")
     text = await transcribe_to(placeholder, bot, stt, media)
     if text and await db.group_feature(message.chat.id, "ai"):
-        remember_transcript(message.reply_to_message, text)
+        source = message.reply_to_message
+        await db.remember_group(source.chat.id, source.message_id, author_name(source), f"[расшифровка] {text}")
 
 
 @router.message(F.chat.type == "private", F.voice | F.video_note | F.audio)
