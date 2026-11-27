@@ -625,48 +625,48 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
         return
     owner_id = conn["user_id"]
     settings = await db.get_user_settings(owner_id)
-    bulk = len(event.message_ids) > 1
+    deleted = set(event.message_ids)
+    suppressed = {mid for mid in deleted if _self_deleted.pop((bc_id, chat.id, mid), None)}
     history = []
-    if bulk and settings["biz_deletes"]:
-        history = await db.fetchall(
+    if settings["biz_deletes"] and deleted - suppressed:
+        rows = await db.fetchall(
             "SELECT * FROM business_messages WHERE bc_id=? AND chat_id=? AND auto=0 ORDER BY message_id",
             (bc_id, chat.id),
         )
-    items = []
-    for mid in sorted(event.message_ids):
-        if _self_deleted.pop((bc_id, chat.id, mid), None):
-            continue
-        row = await db.get_business_message(bc_id, chat.id, mid)
-        if row:
-            await db.delete_business_message(bc_id, chat.id, mid)
-        if (row and (bulk or row["from_id"] != owner_id)
-                and not row["auto"] and not is_automatic(row["text"])):
-            items.append(row)
-    if not items or not settings["biz_deletes"]:
-        return
-    if bulk:
+        history = [row for row in rows if row["message_id"] not in suppressed
+                   and not is_automatic(row["text"])]
+    items = [row for row in history if row["message_id"] in deleted]
+    archive_chat = items and (len(deleted) > 1 or len(items) == len(history))
+    if archive_chat:
         lines = []
+        attachments = []
+        counts = {}
         for row in history:
-            if is_automatic(row["text"]):
-                continue
+            author = row["from_name"] or str(row["from_id"])
             if row["from_id"] == owner_id:
-                author_name = "Вы"
+                author = "Вы"
             elif row["from_username"]:
-                author_name = "@" + row["from_username"]
-            else:
-                author_name = row["from_name"] or str(row["from_id"])
-            media = MEDIA_NAMES.get(row["media_type"], "")
-            lines.append(f"{author_name}: {row['text'] or media}")
-        archive = BufferedInputFile("\n".join(lines).encode("utf-8"), filename="chat.txt")
-        await bot.send_document(conn["user_chat_id"], archive, parse_mode=None,
-                                caption=f"История чата · {chat.full_name} · {len(lines)}")
-        for row in items:
+                author = "@" + row["from_username"]
+            body = row["text"] or ""
             if row["file_id"]:
-                caption = who(row["from_id"], row["from_name"], row["from_username"])
-                try:
-                    await send_media(bot, conn["user_chat_id"], row["media_type"], row["file_id"], caption)
-                except TelegramBadRequest:
-                    await safe_send(bot, conn["user_chat_id"], f"{caption} — медиа недоступно")
+                kind = row["media_type"]
+                counts[kind] = counts.get(kind, 0) + 1
+                label = f"{MEDIA_NAMES.get(kind, 'файл')} {counts[kind]}"
+                attachments.append((kind, row["file_id"], label))
+                body = f"{label} — {body}" if body else label
+            lines.append(f"{author}: {body}")
+        target = conn["user_chat_id"]
+        archive = BufferedInputFile("\n".join(lines).encode("utf-8"), filename="chat.txt")
+        await bot.send_document(target, archive, parse_mode=None,
+                                caption=f"История чата · {chat.full_name} · {len(lines)}")
+        for kind, file_id, label in attachments:
+            try:
+                await send_media(bot, target, kind, file_id, label)
+            except TelegramBadRequest:
+                await safe_send(bot, target, f"{label} — медиа недоступно")
+    for mid in deleted:
+        await db.delete_business_message(bc_id, chat.id, mid)
+    if archive_chat or not items or items[0]["from_id"] == owner_id:
         return
     first = items[0]
     author = who(first["from_id"], first["from_name"], first["from_username"])
