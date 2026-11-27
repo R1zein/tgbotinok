@@ -1,6 +1,7 @@
 """Apply Esgram UI to the pinned Telegram Android checkout before building."""
 from pathlib import Path
 import subprocess
+import re
 import sys
 
 root = Path(sys.argv[1])
@@ -38,7 +39,11 @@ insert(ui / "DialogsActivity.java", '''        if (!onlySelect && folderId == 0)
             esgramButton.setContentDescription("Настройки Esgram");
             Runnable openBot = () -> org.telegram.messenger.browser.Browser.openUrl(getParentActivity(), "https://t.me/esgrambot");
             esgramButton.setOnClickListener(v -> new android.app.AlertDialog.Builder(getParentActivity())
-                    .setTitle("Настройки Esgram").setItems(new String[]{"Открыть @esgrambot"}, (d, i) -> openBot.run()).show());
+                    .setTitle("Настройки Esgram").setItems(new String[]{"Удалённые чаты", "Настройки прокси", "Открыть @esgrambot"}, (d, i) -> {
+                        if (i == 0) getParentActivity().startActivity(new android.content.Intent(getParentActivity(), esgram.local.ArchiveActivity.class));
+                        else if (i == 1) presentFragment(new ProxyListActivity());
+                        else openBot.run();
+                    }).show());
             android.content.SharedPreferences prefs = esgramButton.getContext().getSharedPreferences("esgram", 0);
             esgramButton.post(() -> {
                 if (getParentActivity() == null || !esgramButton.isShown() || prefs.getBoolean("intro_seen", false)) return;
@@ -52,4 +57,24 @@ insert(ui / "DialogsActivity.java", '''        if (!onlySelect && folderId == 0)
 <path android:fillColor="#159C69" android:pathData="M3,3h18v18H3z"/>
 <path android:fillColor="#FFFFFF" android:pathData="M7,6h10v3H10v2h6v2h-6v2h7v3H7z"/>
 </vector>''', encoding="utf8")
+activity = src / "java/esgram/local/ArchiveActivity.java"
+activity.parent.mkdir(parents=True, exist_ok=True)
+activity.write_bytes(Path(__file__).with_name("ArchiveActivity.java").read_bytes())
+manifest = src / "AndroidManifest.xml"
+content = manifest.read_text(encoding="utf8")
+if "esgram.local.ArchiveActivity" not in content:
+    if "</application>" not in content:
+        raise SystemExit("Missing application element in Android manifest")
+    manifest.write_text(content.replace("</application>", '<activity android:name="esgram.local.ArchiveActivity" android:exported="false" />\n    </application>'), encoding="utf8")
+
+# Keep the upstream Java namespace; use a separate Android installation ID.
+properties = root / "gradle.properties"
+props = properties.read_text(encoding="utf8")
+properties.write_text(re.sub(r"(?m)^APP_PACKAGE=.*$", "APP_PACKAGE=app.esgram.messenger", props), encoding="utf8")
+for path in [manifest, *(root / "TMessagesProj/config").rglob("AndroidManifest*.xml")]:
+    xml = path.read_text(encoding="utf8")
+    xml = re.sub(r'android:label="@string/AppName(?:Beta)?"', 'android:label="Esgram"', xml)
+    xml = re.sub(r'(android:(?:icon|roundIcon))="@mipmap/(?:ic|icon_\d+)_launcher(?:_round)?"',
+                 r'\1="@drawable/esgram_mark"', xml)
+    path.write_text(xml, encoding="utf8")
 
