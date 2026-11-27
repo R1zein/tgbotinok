@@ -14,7 +14,7 @@ import re
 import time
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import (
     BufferedInputFile,
     BusinessConnection,
@@ -158,7 +158,7 @@ async def get_connection(bot: Bot, db: Database, bc_id: str):
 async def _save_connection(db: Database, conn: BusinessConnection) -> tuple[bool, bool]:
     rights = conn.rights
     can_delete = bool(rights and rights.can_delete_all_messages)
-    can_reply = bool((rights and rights.can_reply) or conn.can_reply)
+    can_reply = bool(rights.can_reply if rights else getattr(conn, "can_reply", False))
     await db.save_business_connection(conn.id, conn.user.id, conn.user_chat_id, conn.is_enabled,
                                       can_reply, can_delete)
     await db.upsert_user(conn.user.id, conn.user.username, conn.user.first_name)
@@ -615,6 +615,44 @@ async def on_business_edit(message: Message, bot: Bot, db: Database):
 
 # ---------- удаления ----------
 
+async def send_chat_archive(bot: Bot, target: int, viewer_id: int, title: str, history) -> None:
+    lines = []
+    attachments = []
+    counts = {}
+    for row in history:
+        author = row["from_name"] or str(row["from_id"])
+        if row["from_id"] == viewer_id:
+            author = "Вы"
+        elif row["from_username"]:
+            author = "@" + row["from_username"]
+        body = row["text"] or ""
+        if row["file_id"]:
+            kind = row["media_type"]
+            counts[kind] = counts.get(kind, 0) + 1
+            label = f"{MEDIA_NAMES.get(kind, 'файл')} {counts[kind]}"
+            attachments.append((kind, row["file_id"], label))
+            body = f"{label} — {body}" if body else label
+        lines.append(f"{author}: {body}")
+    archive = BufferedInputFile("\n".join(lines).encode("utf-8"), filename="chat.txt")
+    for attempt in range(3):
+        try:
+            await bot.send_document(target, archive, parse_mode=None,
+                                    caption=f"История чата · {title} · {len(lines)}")
+            break
+        except TelegramRetryAfter as exc:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(exc.retry_after + 1)
+    for kind, file_id, label in attachments:
+        try:
+            await send_media(bot, target, kind, file_id, label)
+        except TelegramForbiddenError:
+            raise
+        except TelegramAPIError as exc:
+            log.warning("Не удалось отправить %s получателю %s: %s", label, target, exc)
+            await safe_send(bot, target, f"{label} — медиа недоступно")
+
+
 @router.deleted_business_messages()
 async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Database):
     if not db.feature_enabled("business"):
@@ -637,33 +675,27 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
                    and not is_automatic(row["text"])]
     items = [row for row in history if row["message_id"] in deleted]
     archive_chat = items and (len(deleted) > 1 or len(items) == len(history))
+    if not items and settings["biz_deletes"] and deleted - suppressed:
+        log.info("Удаление в бизнес-чате %s: получено %d ID, совпадений в кэше нет",
+                 chat.id, len(deleted))
     if archive_chat:
-        lines = []
-        attachments = []
-        counts = {}
-        for row in history:
-            author = row["from_name"] or str(row["from_id"])
-            if row["from_id"] == owner_id:
-                author = "Вы"
-            elif row["from_username"]:
-                author = "@" + row["from_username"]
-            body = row["text"] or ""
-            if row["file_id"]:
-                kind = row["media_type"]
-                counts[kind] = counts.get(kind, 0) + 1
-                label = f"{MEDIA_NAMES.get(kind, 'файл')} {counts[kind]}"
-                attachments.append((kind, row["file_id"], label))
-                body = f"{label} — {body}" if body else label
-            lines.append(f"{author}: {body}")
-        target = conn["user_chat_id"]
-        archive = BufferedInputFile("\n".join(lines).encode("utf-8"), filename="chat.txt")
-        await bot.send_document(target, archive, parse_mode=None,
-                                caption=f"История чата · {chat.full_name} · {len(lines)}")
-        for kind, file_id, label in attachments:
+        owner_chat = conn["user_chat_id"]
+        recipients = [(owner_chat, owner_id, chat.full_name)]
+        if chat.type == "private" and chat.id not in (owner_chat, owner_id):
+            peer_settings = await db.get_user_settings(chat.id)
+            if peer_settings["biz_deletes"] and not await db.is_banned(chat.id):
+                owner_name = next((r["from_name"] for r in reversed(history)
+                                   if r["from_id"] == owner_id and r["from_name"]), None)
+                recipients.append((chat.id, chat.id, owner_name or "личная переписка"))
+        for target, viewer_id, title in recipients:
             try:
-                await send_media(bot, target, kind, file_id, label)
-            except TelegramBadRequest:
-                await safe_send(bot, target, f"{label} — медиа недоступно")
+                await send_chat_archive(bot, target, viewer_id, title, history)
+            except TelegramAPIError as exc:
+                log.info("Архив бизнес-чата %s не доставлен получателю %s: %s", chat.id, target, exc)
+                if target == chat.id and target != owner_chat:
+                    await safe_send(bot, owner_chat, "Архив собеседнику доставить не удалось. "
+                                    "Для получения личных сообщений от бота ему нужно открыть бот "
+                                    "и нажать «Старт».")
     for mid in deleted:
         await db.delete_business_message(bc_id, chat.id, mid)
     if archive_chat or not items or items[0]["from_id"] == owner_id:
