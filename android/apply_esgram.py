@@ -11,6 +11,21 @@ if subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=T
 src = root / "TMessagesProj/src/main"
 ui = src / "java/org/telegram/ui"
 
+# Keep credentials out of the tracked Android sources. Gradle generates BuildConfig.
+build_vars = src / "java/org/telegram/messenger/BuildVars.java"
+definitions = build_vars.read_text(encoding="utf8")
+for field, java_type in [("APP_ID", "int"), ("APP_HASH", "String")]:
+    pattern = rf"(public static {java_type} {field} = )[^;]+;"
+    definitions, count = re.subn(pattern, rf"\g<1>BuildConfig.ESGRAM_{field};", definitions)
+    if count != 1:
+        raise SystemExit("Unexpected Telegram credential declaration: " + field)
+module_build = root / "TMessagesProj/build.gradle"
+gradle_text = module_build.read_text(encoding="utf8")
+settings = Path(__file__).with_name("credentials.gradle").read_text(encoding="utf8")
+if settings not in gradle_text:
+    module_build.write_text(gradle_text.rstrip() + "\n\n" + settings, encoding="utf8")
+build_vars.write_text(definitions, encoding="utf8")
+
 def insert(file, code):
     text = file.read_text(encoding="utf8")
     marker = "ActionBarMenu menu = actionBar.createMenu();"
