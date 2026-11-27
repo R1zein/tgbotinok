@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 
+DEFAULT_CHAT_MAX_TOKENS = 2048
+
+
 def _int(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     return int(raw) if raw else default
@@ -33,7 +36,7 @@ class Config:
     ai_base_url: str = "https://api.deepseek.com"
     ai_code_model: str | None = None
     ai_model: str = "deepseek-chat"
-    ai_chat_tokens: int = 400
+    ai_chat_tokens: int = DEFAULT_CHAT_MAX_TOKENS
     ai_code_tokens: int = 2400
     ai_daily_limit: int = 2000
     ai_timeout: int = 120
@@ -83,7 +86,7 @@ def load_config() -> Config:
         ai_base_url=os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com",
         ai_code_model=os.getenv("AI_CODE_MODEL", "").strip() or None,
         ai_model=os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
-        ai_chat_tokens=max(1, _int("AI_CHAT_MAX_TOKENS", 400)),
+        ai_chat_tokens=max(1, _int("AI_CHAT_MAX_TOKENS", DEFAULT_CHAT_MAX_TOKENS)),
         ai_code_tokens=max(1, _int("AI_CODE_MAX_TOKENS", 2400)),
         ai_daily_limit=_int("AI_DAILY_LIMIT", 2000),
         ai_timeout=_int("AI_TIMEOUT", 120),
