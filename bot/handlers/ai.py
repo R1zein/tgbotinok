@@ -22,6 +22,7 @@ from ..services.ai import (AIClient, AIError, MOSCOW_OFFSET, build_messages,
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
+from ..utils.telegram_math import telegram_math
 from ..utils.text import esc, mention
 from .moderation import announce_penalty, do_ban, do_kick, do_mute, undo_kb
 from .reactions import react
@@ -326,10 +327,13 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     res = parse_reply(answer)
     if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
         await react(bot, chat_id, message.message_id, res["reaction"])
-    await send_answer(message, db, config, res["text"] or "🤔")
+    await send_answer(message, db, config, res["text"] or "🤔", coding=coding)
 
 
-async def send_answer(message: Message, db: Database, config: Config, answer: str) -> None:
+async def send_answer(message: Message, db: Database, config: Config, answer: str,
+                      *, coding: bool = False) -> None:
+    if not coding:
+        answer = telegram_math(answer)
     sender = f"{config.ai_name} (бот, ответ для {author_name(message)})"
     while answer:
         end = min(len(answer), 3900)
