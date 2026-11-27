@@ -1800,10 +1800,12 @@ async def test_ai_called_by_bot_word_and_name(env, monkeypatch):
     assert not seen
     await db.set_chat_setting(GROUP, "ai", True)
     for text, question in (("бот, как дела?", "как дела?"), ("Бот расскажи анекдот", "расскажи анекдот"),
+                           ("бот сравни 13 и 17", "сравни 13 и 17"),
                            ("esg как тебя зовут", "как тебя зовут"), ("ИИ: привет", "привет")):
         clock[0] += 10
         await feed(upd(message=msg(GROUP, USER, text)))
         assert question in seen[-1][1]["content"], text
+        assert s.texts()[-1] == "Я esg 🙂"
     assert "Тебя зовут esg" in seen[-1][0]["content"]
     # слово «бот» не в начале — не прямое обращение
     n = len(seen)
