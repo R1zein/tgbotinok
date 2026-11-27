@@ -276,6 +276,8 @@ async def on_business_message(message: Message, bot: Bot, db: Database, config: 
             await echo(bot, bc_id, message)
         return
 
+    if settings["biz_deletes"]:
+        await cache(db, message, bc_id)
     text = (message.text or "").strip()
     if is_owner and text.startswith("."):
       if await dot_command(message, bot, db, conn, settings, mode, config, text, stt=stt):
@@ -574,7 +576,11 @@ async def on_business_edit(message: Message, bot: Bot, db: Database):
     if not conn or not conn["enabled"]:
         return
     sender = message.from_user
-    if not sender or sender.id == conn["user_id"]:
+    if not sender:
+        return
+    if sender.id == conn["user_id"]:
+        if (await db.get_user_settings(sender.id))["biz_deletes"]:
+            await cache(db, message, bc_id)
         return
     old = await db.get_business_message(bc_id, message.chat.id, message.message_id)
     new_text = describe(message)
@@ -619,16 +625,36 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
         return
     owner_id = conn["user_id"]
     settings = await db.get_user_settings(owner_id)
+    bulk = len(event.message_ids) > 1
     items = []
-    for mid in sorted(event.message_ids):
+    for mid in sorted(event.message_ids, reverse=True):
         if _self_deleted.pop((bc_id, chat.id, mid), None):
             continue
         row = await db.get_business_message(bc_id, chat.id, mid)
         if row:
             await db.delete_business_message(bc_id, chat.id, mid)
-        if row and row["from_id"] != owner_id and not row["auto"] and not is_automatic(row["text"]):
+        if (row and len(items) < 30 and (bulk or row["from_id"] != owner_id)
+                and not row["auto"] and not is_automatic(row["text"])):
             items.append(row)
     if not items or not settings["biz_deletes"]:
+        return
+    items.reverse()
+    if bulk:
+        lines = []
+        for row in items:
+            author_name = row["from_name"] or str(row["from_id"])
+            media = MEDIA_NAMES.get(row["media_type"], "")
+            lines.append(f"{author_name}: {row['text'] or media}")
+        archive = BufferedInputFile("\n\n".join(lines).encode("utf-8"), filename="chat.txt")
+        await bot.send_document(conn["user_chat_id"], archive, parse_mode=None,
+                                caption=f"Удалённые сообщения · {chat.full_name} · {len(items)}")
+        for row in items:
+            if row["file_id"]:
+                caption = who(row["from_id"], row["from_name"], row["from_username"])
+                try:
+                    await send_media(bot, conn["user_chat_id"], row["media_type"], row["file_id"], caption)
+                except TelegramBadRequest:
+                    await safe_send(bot, conn["user_chat_id"], f"{caption} — медиа недоступно")
         return
     first = items[0]
     author = who(first["from_id"], first["from_name"], first["from_username"])
