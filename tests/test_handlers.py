@@ -477,7 +477,9 @@ async def test_business(env):
         "message_ids": [m1["message_id"], photo["message_id"]],
     }))
     assert "SendPhoto" in s.names()
-    assert any("Удалено сообщений: 2" in t and "не секрет" in t for t in s.texts())
+    docs = [call for call in s.calls if type(call).__name__ == "SendDocument"]
+    assert {doc.chat_id for doc in docs} == {OWNER, OTHER}
+    assert all(doc.document.filename == "chat.txt" and "не секрет" in doc.document.data.decode() for doc in docs)
 
     # исчезающее фото: в кэше его нет, владелец отвечает на него
     vanish = bmsg(OTHER, None, photo=[{"file_id": "VAN", "file_unique_id": "v", "width": 1, "height": 1}])

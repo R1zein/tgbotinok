@@ -14,7 +14,7 @@ import re
 import time
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramServerError, TelegramRetryAfter
 from aiogram.types import (
     BufferedInputFile,
     BusinessConnection,
@@ -643,6 +643,10 @@ async def send_chat_archive(bot: Bot, target: int, viewer_id: int, title: str, h
             if attempt == 2:
                 raise
             await asyncio.sleep(exc.retry_after + 1)
+        except (TelegramNetworkError, TelegramServerError):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2 ** attempt)
     for kind, file_id, label in attachments:
         try:
             await send_media(bot, target, kind, file_id, label)
@@ -687,15 +691,20 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
                 owner_name = next((r["from_name"] for r in reversed(history)
                                    if r["from_id"] == owner_id and r["from_name"]), None)
                 recipients.append((chat.id, chat.id, owner_name or "личная переписка"))
+        owner_delivery_failed = False
         for target, viewer_id, title in recipients:
             try:
                 await send_chat_archive(bot, target, viewer_id, title, history)
             except TelegramAPIError as exc:
                 log.info("Архив бизнес-чата %s не доставлен получателю %s: %s", chat.id, target, exc)
+                if target == owner_chat:
+                    owner_delivery_failed = True
                 if target == chat.id and target != owner_chat:
                     await safe_send(bot, owner_chat, "Архив собеседнику доставить не удалось. "
                                     "Для получения личных сообщений от бота ему нужно открыть бот "
                                     "и нажать «Старт».")
+        if owner_delivery_failed:
+            return  # Keep cached rows available for a later export.
     for mid in deleted:
         await db.delete_business_message(bc_id, chat.id, mid)
     if archive_chat or not items or items[0]["from_id"] == owner_id:
