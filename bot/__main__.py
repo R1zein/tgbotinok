@@ -51,6 +51,7 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="help", description="Список команд"),
     ], scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands([
+        BotCommand(command="code", description="Задать задачу по программированию"),
         BotCommand(command="settings", description="Настройки группы"),
         BotCommand(command="help", description="Список команд"),
         BotCommand(command="mute", description="Заглушить (ответом)"),
