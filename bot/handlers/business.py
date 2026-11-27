@@ -626,28 +626,40 @@ async def on_business_deleted(event: BusinessMessagesDeleted, bot: Bot, db: Data
     owner_id = conn["user_id"]
     settings = await db.get_user_settings(owner_id)
     bulk = len(event.message_ids) > 1
+    history = []
+    if bulk and settings["biz_deletes"]:
+        history = await db.fetchall(
+            "SELECT * FROM business_messages WHERE bc_id=? AND chat_id=? AND auto=0 ORDER BY message_id",
+            (bc_id, chat.id),
+        )
     items = []
-    for mid in sorted(event.message_ids, reverse=True):
+    for mid in sorted(event.message_ids):
         if _self_deleted.pop((bc_id, chat.id, mid), None):
             continue
         row = await db.get_business_message(bc_id, chat.id, mid)
         if row:
             await db.delete_business_message(bc_id, chat.id, mid)
-        if (row and len(items) < 30 and (bulk or row["from_id"] != owner_id)
+        if (row and (bulk or row["from_id"] != owner_id)
                 and not row["auto"] and not is_automatic(row["text"])):
             items.append(row)
     if not items or not settings["biz_deletes"]:
         return
-    items.reverse()
     if bulk:
         lines = []
-        for row in items:
-            author_name = row["from_name"] or str(row["from_id"])
+        for row in history:
+            if is_automatic(row["text"]):
+                continue
+            if row["from_id"] == owner_id:
+                author_name = "Вы"
+            elif row["from_username"]:
+                author_name = "@" + row["from_username"]
+            else:
+                author_name = row["from_name"] or str(row["from_id"])
             media = MEDIA_NAMES.get(row["media_type"], "")
             lines.append(f"{author_name}: {row['text'] or media}")
-        archive = BufferedInputFile("\n\n".join(lines).encode("utf-8"), filename="chat.txt")
+        archive = BufferedInputFile("\n".join(lines).encode("utf-8"), filename="chat.txt")
         await bot.send_document(conn["user_chat_id"], archive, parse_mode=None,
-                                caption=f"Удалённые сообщения · {chat.full_name} · {len(items)}")
+                                caption=f"История чата · {chat.full_name} · {len(lines)}")
         for row in items:
             if row["file_id"]:
                 caption = who(row["from_id"], row["from_name"], row["from_username"])
