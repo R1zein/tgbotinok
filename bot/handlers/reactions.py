@@ -8,18 +8,20 @@
 Ботам доступны только стандартные реакции Telegram (не премиум-эмодзи и не платные).
 Если админы группы ограничили список реакций, неподходящие бот просто пропускает.
 """
+import logging
 import random
 import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import Message, ReactionTypeEmoji, TelegramObject
 
 from ..db import Database
 from ..utils.filters import Cmd
 from ..utils.text import esc
 
+log = logging.getLogger(__name__)
 router = Router(name="reactions")
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
@@ -64,8 +66,9 @@ async def react(bot: Bot, chat_id: int, message_id: int, emoji: str) -> bool:
     try:
         await bot.set_message_reaction(chat_id, message_id, [ReactionTypeEmoji(emoji=emoji)])
         return True
-    except TelegramBadRequest:
-        return False  # реакция запрещена в группе, сообщение удалено и т.п.
+    except TelegramAPIError as e:
+        log.info("Реакция не установлена chat=%s message=%s: %s", chat_id, message_id, e)
+        return False
 
 
 @router.message(Cmd("реакция", "реакт", "react"))

@@ -47,6 +47,10 @@ async def settings_kb(db: Database, chat_id: int) -> InlineKeyboardMarkup:
         label = PERSONAS.get(s.get("ai_persona"), PERSONAS["normal"])[0]
         rows.append([InlineKeyboardButton(text=f"🤖 Характер ИИ: {label}",
                                           callback_data="gs:ai_persona")])
+        if s.get("ai_persona") == "adaptive":
+            rows.append([InlineKeyboardButton(
+                text=("✅" if s.get("ai_sharp_humor") else "❌") + " Острые подколы",
+                callback_data="gs:ai_sharp_humor")])
         rows.append([InlineKeyboardButton(
             text=f"⏱ Пауза ИИ: {s.get('ai_cooldown', 5)} сек" if s.get("ai_cooldown", 5)
             else "⏱ Пауза ИИ: без паузы", callback_data="gs:ai_cooldown")])
@@ -150,7 +154,7 @@ async def cb_settings(call: CallbackQuery, bot: Bot, db: Database):
         cur = int(s.get("ai_passive_every", 0))
         await db.set_chat_setting(chat_id, key,
                                   next((c for c in PASSIVE_CHOICES if c > cur), PASSIVE_CHOICES[0]))
-    elif key in ("ai_proactive", "ai_punish"):
+    elif key in ("ai_proactive", "ai_punish", "ai_sharp_humor"):
         await db.set_chat_setting(chat_id, key, not s.get(key))
     elif key == "ai_cooldown":
         cur = int(s.get("ai_cooldown", 5))

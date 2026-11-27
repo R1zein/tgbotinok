@@ -34,6 +34,7 @@ GROUP_DEFAULTS: dict[str, object] = {
     "reactions": False,
     "reactions_chance": 20,
     "ai_persona": "normal",
+    "ai_sharp_humor": False,
     "ai_cooldown": 5,
     "ai_proactive": False,
     "ai_passive_every": 0,

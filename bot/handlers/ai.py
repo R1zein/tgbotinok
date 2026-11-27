@@ -18,7 +18,7 @@ from aiogram.types import Message, TelegramObject
 from ..config import Config
 from ..db import Database
 from ..services.ai import (AIClient, AIError, MOSCOW_OFFSET, build_messages,
-                           build_moderation_messages, explicit_direct_insult, parse_reply)
+                           build_moderation_messages, explicit_direct_insult, missing_answer, parse_reply)
 from ..services.stt import STTError, Transcriber, fetch_audio, media_of
 from ..utils.filters import PREFIXES
 from ..utils.perms import is_chat_admin
@@ -142,7 +142,7 @@ async def ai_trigger(message: Message, bot: Bot, config: Config, db: Database) -
     if word == "бот" and text[:1] in PREFIXES:
         return {"question": rest.strip(" ,:")}
     if re.search(r"^(?:эй[\s,]+)?бот(?:$|[,:!?]|(?:\s+(?:как|скок|сколько|что|кто|где|"
-                 r"почему|скажи|помоги|подскажи|ты|объясни|можешь|привет)\b))|"
+                 r"почему|скажи|помоги|подскажи|ты|объясни|можешь|умеешь|поставь|поставишь|привет)\b))|"
                  r"(?:^|[\s,])(?:привет|эй|слушай)[\s,]+бот\b|,\s*бот[?!.]*$", text, re.I):
         return {"question": text if text.strip(" ,.!?:;").casefold() != "бот" else ""}
     if handle:
@@ -301,6 +301,7 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
                               reply_to=await reply_context(db, message),
+                              sharp_humor=settings.get("ai_sharp_humor", False) and not coding,
                               calm=persona == "adaptive" and await db.calm_tone(chat_id, message.from_user.id),
                               utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False)
     if not message.text:  # голосовое: проверяем уже расшифрованное сообщение
@@ -315,19 +316,29 @@ async def _respond(message: Message, bot: Bot, db: Database, ai: AIClient, confi
     _recorded.add((chat_id, message.message_id))
     await _typing(bot, message)
     try:
+        options = {}
         if coding:
             messages[0]["content"] += " Режим программирования: подробно разбери задачу и приведи полный код, когда он нужен. Можно использовать блоки кода."
-            options = {"model": config.ai_code_model} if config.ai_code_model else {}
-            answer = await ai.complete(messages, max_tokens=config.ai_code_tokens, **options)
-        else:
-            answer = await ai.complete(messages)
+            options["max_tokens"] = config.ai_code_tokens
+            if config.ai_code_model:
+                options["model"] = config.ai_code_model
+        res = parse_reply(await ai.complete(messages, **options))
+        reaction = res["reaction"]
+        if missing_answer(res["text"]):
+            messages[0]["content"] += (
+                " Сейчас требуется текстовый ответ на последнее обращение. Ответь по существу "
+                "сразу, без служебных строк, даже если реакция уже выбрана."
+            )
+            res = parse_reply(await ai.complete(messages, **options))
+            reaction = reaction or res["reaction"]
+            if missing_answer(res["text"]):
+                raise AIError("Модель не вернула текст ответа. Попробуйте ещё раз.")
     except AIError as e:
         await message.reply(f"🤖 {e}", parse_mode=None)
         return
-    res = parse_reply(answer)
-    if res["reaction"]:  # реакция на сообщение по его эмоции — помимо ответа
-        await react(bot, chat_id, message.message_id, res["reaction"])
-    await send_answer(message, db, config, res["text"] or "🤔", coding=coding)
+    if reaction:
+        await react(bot, chat_id, message.message_id, reaction)
+    await send_answer(message, db, config, res["text"], coding=coding)
 
 
 async def send_answer(message: Message, db: Database, config: Config, answer: str,
@@ -411,6 +422,12 @@ async def ai_voice(message: Message, bot: Bot, db: Database, ai: AIClient, confi
 # ---------- ИИ читает чат сам ----------
 PASSIVE_CHOICES = [0, 5, 15, 30, 60]  # как часто ИИ читает обычные сообщения (0 — каждое)
 _passive_last: dict[int, float] = {}
+_BANTER_INTERVAL = 120  # пауза между попытками самостоятельно подхватить шутку в группе
+_banter_last: dict[int, float] = {}
+_BANTER_CUE = re.compile(
+    r"(?<![\w.,])67(?!\w|[.,]\d)|\b(?:six[\s-]+seven|сикс[\s-]+севен|мем|мемчик|жиза)\b|😂|🤣",
+    re.I,
+)
 _bg_tasks: set[asyncio.Task] = set()
 
 
@@ -576,41 +593,57 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
     if reply and (not reply.from_user or reply.from_user.id != me.id):
         return
     history = await db.group_history(chat_id, message.message_id)
+    persona = settings.get("ai_persona", "normal")
+    uid = message.from_user.id
+    if await db.is_banned(uid):
+        return
+    calm = persona == "adaptive" and await db.calm_tone(chat_id, uid)
+    banter = False
     if not refers_to_bot(message, me, config):
         recent_sender = f"{config.ai_name} (бот, ответ для {author_name(message)})"
-        continuing = any(sender == recent_sender for sender, _ in history[-6:])
-        if every or not continuing:
-            return
+        continuing = not every and any(sender == recent_sender for sender, _ in history[-6:])
         tone = requested_calm(text)
-        if (tone is not None and settings.get("ai_persona") == "adaptive" and history[-1][0] == recent_sender
-                and not await db.is_banned(message.from_user.id)):
+        if tone is not None and persona == "adaptive" and history and history[-1][0] == recent_sender:
             await apply_tone_request(message, db, config, tone)
             return
-        # Даже во время диалога короткое суждение может относиться к разговору людей.
-        if not ("?" in text or re.match(
-                r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
-                r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I)):
-            return
-    if await db.is_banned(message.from_user.id):
-        return
+        follow_up = continuing and ("?" in text or re.match(
+            r"^(?:а\s+)?(?:да|нет|давай|продолжай|объясни|расскажи|покажи|почему|"
+            r"зачем|как|уточни|можешь|подробнее|что|когда|где|сколько)\b", text, re.I))
+        if not follow_up and re.match(
+                r"^(?:ну\s+)?(?:так|всё[- ]таки)\s+(?:сравнишь|сравни|объяснишь|расскажешь|ответишь)\b",
+                text, re.I):
+            # Уточнение общего вопроса может прийти от другого автора.
+            follow_up = any(sender.startswith(f"{config.ai_name} (бот, ответ для ")
+                            for sender, _ in history[-12:])
+        if not follow_up:
+            if (persona != "adaptive" or calm or reply or message.forward_origin
+                    or any(e.type in ("mention", "text_mention", "url", "text_link", "code", "pre")
+                           for e in message.entities or [])
+                    or not _BANTER_CUE.search(text)):
+                return
+            banter = True
     if now - _passive_last.get(chat_id, 0) < every:
         return  # ограничиваем самостоятельные ответы; модерация уже выполнена отдельно
+    if banter:
+        if now - _banter_last.get(chat_id, 0) < _BANTER_INTERVAL:
+            return
+        _banter_last[chat_id] = now
     _passive_last[chat_id] = now
 
     people, author_names = await group_people(db, chat_id, message.from_user.id)
-    persona = settings.get("ai_persona", "normal")
     style = await db.member_history(chat_id, message.from_user.id, message.message_id) if persona == "adaptive" else None
     messages = build_messages(config.ai_name, persona, history, author_name(message), text,
                               creator=await creator_label(db, config, chat_id),
                               author_is_creator=message.from_user.id in config.admin_ids,
                               people=people, author_names=author_names, author_style=style,
                               reply_to=await reply_context(db, message),
-                              calm=persona == "adaptive" and await db.calm_tone(chat_id, message.from_user.id),
-                              utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False, passive="reply")
+                              calm=calm, sharp_humor=settings.get("ai_sharp_humor", False),
+                              utc_offset=settings.get("utc_offset", MOSCOW_OFFSET), punish=False,
+                              passive="banter" if banter else "reply")
     try:
         decision = (await ai.complete(messages)).strip()
         verdict, _, body = decision.partition("\n")
-        if verdict.strip().upper() != "АДРЕСАТ: БОТ":
+        if verdict.strip().upper() != ("ШУТКА" if banter else "АДРЕСАТ: БОТ"):
             return
         res = parse_reply(body)
         greeting = r"\b(?:доброе утро|добрый (?:день|вечер)|привет|здравствуй(?:те)?)\b"
@@ -618,7 +651,9 @@ async def passive_check(message: Message, data: dict[str, Any]) -> None:
             return
     except AIError:
         return  # в фоне ошибки ИИ не показываем
-    if proactive and not res["skip"]:
+    if banter and await db.calm_tone(chat_id, uid):
+        return
+    if not res["skip"] and not missing_answer(res["text"]):
         cooldown = int(settings.get("ai_cooldown", 5))
         if time.time() - _last_answer.get(chat_id, 0) >= cooldown:
             _last_answer[chat_id] = time.time()
